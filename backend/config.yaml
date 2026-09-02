@@ -1,0 +1,43 @@
+# Mosquitto 容器配置
+container_name: "mqtt-broker"
+container_passwd_path: "/mosquitto/config/passwd"  # 容器内passwd文件路径
+host_passwd_path: "/data/passwd"                   # 容器外passwd文件路径（Docker挂载路径）
+acl_path: "/data/acl"                              # ACL文件路径（Docker挂载路径）
+device_metadata_path: "/data/metadata/device_metadata.json" # 控制台设备显示名称持久化文件
+device_config_path: "/data/metadata/device_config.json"     # 插口名/备注/定时任务配置持久化文件
+
+# ACL模式列表, %s 会被替换为用户的MAC地址(大写和小写各一份)
+acl_patterns:
+  - "device/ztc1/%s/#"
+  - "homeassistant/+/%s/#"
+
+# Web管理配置
+admin_username: "admin"
+admin_password: "admin123"
+
+# 注册等级:
+#   0 = 禁止注册
+#   1 = 任意注册
+#   2 = 仅邮箱注册（需邮箱验证码激活）
+register_level: 1
+
+# 联系维护者信息（显示在注册页）
+contact_info: "如需帮助请联系管理员"
+
+# MQTT服务器地址（可选，优先从环境变量读取）
+# MQTT_URI: 设备连接地址，如 mqtt.example.com:1883
+# MQTT_WS_URI: 前端WebSocket连接地址，如 wss://mqtt.example.com/mqtt
+mqtt_uri: ""
+mqtt_ws_uri: ""
+
+# SMTP 邮件配置（register_level=2 时必填）
+smtp:
+  host: "smtp.qiye.aliyun.com"
+  port: 465
+  username: "example@fjrcn.cn"
+  password: "test"
+  from: "example@fjrcn.cn"
+  tls: true   # true=SSL/TLS(465), false=STARTTLS(587)
+
+# 服务配置
+listen_addr: ":8080"
