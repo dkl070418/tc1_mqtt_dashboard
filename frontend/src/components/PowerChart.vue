@@ -1,11 +1,15 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { createChart, ColorType } from 'lightweight-charts'
+import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { createChart, AreaSeries, ColorType } from 'lightweight-charts'
 
 const props = defineProps({
   mac: {
     type: String,
     required: true
+  },
+  power: {
+    type: Number,
+    default: 0
   }
 })
 
@@ -15,6 +19,7 @@ const granularityRef = ref('auto')
 const summaryRef = ref(null)
 const loadingRef = ref(false)
 const errorRef = ref('')
+const chipBrokenRef = ref(false)
 
 let chart = null
 let series = null
@@ -53,7 +58,7 @@ const initChart = () => {
     width: containerRef.value.clientWidth,
     height: 300,
   })
-  series = chart.addAreaSeries({
+  series = chart.addSeries(AreaSeries, {
     lineColor: '#2196f3',
     topColor: 'rgba(33,150,243,0.3)',
     bottomColor: 'rgba(33,150,243,0.0)',
@@ -83,6 +88,7 @@ const loadSummary = async () => {
 }
 
 const loadData = async () => {
+  if (chipBrokenRef.value) return
   const token = localStorage.getItem('mqtt_admin_token')
   if (!token) {
     errorRef.value = '未登录管理员，无法查看功耗'
@@ -116,7 +122,11 @@ const loadData = async () => {
       return { time: ts, value: parseFloat(value.toFixed(1)) }
     }).filter(p => p.time > 0)
 
-    if (!chart) initChart()
+    if (!series || !chart) initChart()
+    if (!series || !chart) {
+      errorRef.value = '图表初始化失败'
+      return
+    }
     series.setData(points)
     chart.timeScale().fitContent()
   } catch (e) {
@@ -131,15 +141,26 @@ const formatKwh = (v) => {
   return n >= 100 ? n.toFixed(0) : n.toFixed(2)
 }
 
+const updateChipState = (val) => {
+  chipBrokenRef.value = val < 0
+  if (val < 0) {
+    errorRef.value = '该设备疑似功耗芯片损坏，不进行统计'
+    loadingRef.value = false
+  } else {
+    errorRef.value = ''
+    nextTick(() => {
+      loadData()
+      loadSummary()
+    })
+  }
+}
+
 watch(() => props.mac, () => {
-  loadSummary()
-  loadData()
+  updateChipState(props.power)
 })
 
 onMounted(() => {
-  initChart()
-  loadSummary()
-  loadData()
+  updateChipState(props.power)
   window.addEventListener('resize', handleResize)
 })
 
@@ -148,6 +169,7 @@ onUnmounted(() => {
   if (chart) {
     chart.remove()
     chart = null
+    series = null
   }
 })
 
@@ -156,11 +178,18 @@ const handleResize = () => {
     chart.applyOptions({ width: containerRef.value.clientWidth })
   }
 }
+
+watch(() => props.power, (val) => {
+  updateChipState(val)
+})
 </script>
 
 <template>
   <div class="power-chart">
-    <div class="power-header">
+    <div v-if="chipBrokenRef" class="chip-broken">
+      ⚠️ 该设备疑似功耗芯片损坏，不进行统计
+    </div>
+    <div class="power-header" v-show="!chipBrokenRef">
       <div class="power-summary" v-if="summaryRef">
         <div class="summary-item">
           <span class="summary-label">当前功率</span>
@@ -186,10 +215,10 @@ const handleResize = () => {
       </div>
     </div>
 
-    <div ref="containerRef" class="chart-container"></div>
+    <div ref="containerRef" class="chart-container" v-show="!chipBrokenRef"></div>
 
     <div v-if="loadingRef" class="power-loading">加载中...</div>
-    <div v-if="errorRef" class="power-error">{{ errorRef }}</div>
+    <div v-if="errorRef && !chipBrokenRef" class="power-error">{{ errorRef }}</div>
   </div>
 </template>
 
@@ -261,5 +290,14 @@ const handleResize = () => {
   font-size: 0.9em;
   text-align: center;
   padding: 10px;
+}
+.chip-broken {
+  padding: 20px;
+  text-align: center;
+  color: #f44336;
+  background: rgba(244, 67, 54, 0.06);
+  border: 1px dashed #f44336;
+  border-radius: 8px;
+  font-size: 1em;
 }
 </style>

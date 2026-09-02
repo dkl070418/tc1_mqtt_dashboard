@@ -92,7 +92,8 @@ func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 				fmt.Sscanf(v, "%f", &powerW)
 			}
 		}
-		if powerW == 0 {
+		if powerW < 0 {
+			// 负值功率：疑似设备功耗芯片损坏，不采集统计
 			return
 		}
 		pc.store.Insert(PowerSample{

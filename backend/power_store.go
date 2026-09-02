@@ -237,7 +237,7 @@ func (s *PowerStore) QueryPower(mac string, from, to int64, granularity string) 
 	switch granularity {
 	case "raw":
 		query = `SELECT ts, power_w FROM power_samples
-			WHERE mac = ? AND ts >= ? AND ts <= ?
+			WHERE mac = ? AND power_w >= 0 AND ts >= ? AND ts <= ?
 			ORDER BY ts ASC LIMIT 100000`
 	case "1h", "hour":
 		query = `SELECT bucket_ts, avg_w, max_w, min_w, energy_kwh
@@ -290,7 +290,7 @@ func (s *PowerStore) GetSummary(mac string) (map[string]any, error) {
 
 	var currentPower sql.NullFloat64
 	s.db.QueryRow(`SELECT power_w FROM power_samples
-		WHERE mac = ? ORDER BY ts DESC LIMIT 1`, mac).Scan(&currentPower)
+		WHERE mac = ? AND power_w >= 0 ORDER BY ts DESC LIMIT 1`, mac).Scan(&currentPower)
 	summary["current_power_w"] = currentPower.Float64
 
 	row := s.db.QueryRow(`SELECT COALESCE(SUM(energy_wh), 0) / 1000.0

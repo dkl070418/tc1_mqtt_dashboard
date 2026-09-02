@@ -631,7 +631,7 @@ const gridStyle = computed(() => {
       </div>
     </div>
 
-    <PowerChart :mac="device.mac" />
+    <PowerChart :mac="device.mac" :power="device.power" />
 
     <!-- 简化版，后续可以添加更多设置 -->
     <details v-if="!isV2" class="advanced-settings">
