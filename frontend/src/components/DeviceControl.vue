@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, reactive, onMounted, watch } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import TaskEditor from './TaskEditor.vue'
 import PowerChart from './PowerChart.vue'
 
@@ -425,11 +425,35 @@ const getV2SocketName = (index) => {
 }
 
 // Layout Control
-const gridLayout = ref(props.deviceConfig?.layout || 'auto') // auto, 1x6, 2x3, 3x2
+const isMobile = ref(window.innerWidth < 768)
+const gridLayout = ref('1x6') // 默认 1行6列；移动端自动切换为 auto
+
+const handleResize = () => {
+  isMobile.value = window.innerWidth < 768
+  if (isMobile.value && gridLayout.value === '1x6') {
+    gridLayout.value = 'auto'
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('resize', handleResize)
+  handleResize()
+  // 服务端异步到达后可能覆盖默认布局，但保留移动端自适应
+  if (isMobile.value && gridLayout.value === '1x6') {
+    gridLayout.value = 'auto'
+  }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize)
+})
 
 // 服务端布局异步到达时同步
 watch(() => props.deviceConfig?.layout, (val) => {
   if (val && val !== gridLayout.value) gridLayout.value = val
+  if (isMobile.value && gridLayout.value === '1x6') {
+    gridLayout.value = 'auto'
+  }
 })
 
 // 布局变化时保存到后端
@@ -579,8 +603,8 @@ const gridStyle = computed(() => {
                🕐 同步时间
               </button>
             </template>
-            <div v-if="timeSyncMsg" class="time-sync-msg">{{ timeSyncMsg }}</div>
         </div>
+        <div v-if="timeSyncMsg" class="time-sync-msg">{{ timeSyncMsg }}</div>
       </div>
     </div>
 
@@ -588,10 +612,10 @@ const gridStyle = computed(() => {
     <div v-if="isV2" class="plugs-grid" :style="gridStyle">
       <div v-for="i in 6" :key="i-1" class="plug-item card" :class="{ on: getV2SocketState(i-1) === 1 }">
         <div class="plug-header">
-          <div v-if="editingPlug !== i-1" class="plug-name" @click="startEdit(i-1)">
-            {{ remarks[i-1] || getV2SocketName(i-1) }}
-            <span v-if="remarks[i-1]" class="remark-indicator" title="本地备注">*</span>
-          </div>
+            <div v-if="editingPlug !== i-1" class="plug-name" @click="startEdit(i-1)" :title="remarks[i-1] || getV2SocketName(i-1)">
+              <span class="plug-name-text">{{ remarks[i-1] || getV2SocketName(i-1) }}</span>
+              <span v-if="remarks[i-1]" class="remark-indicator" title="本地备注">*</span>
+            </div>
           <input v-else 
             v-model="tempName" 
             @blur="saveV2Edit(i-1)" 
@@ -617,8 +641,8 @@ const gridStyle = computed(() => {
       <div v-for="i in 6" :key="i-1" class="plug-item card" :class="{ on: getPlug(i-1)?.on === 1 }">
         <div class="plug-header">
           <template v-if="getPlug(i-1)">
-            <div v-if="editingPlug !== i-1" class="plug-name" @click="startEdit(i-1)">
-              {{ remarks[i-1] || getPlug(i-1).name || `插口 ${i}` }}
+            <div v-if="editingPlug !== i-1" class="plug-name" @click="startEdit(i-1)" :title="remarks[i-1] || getPlug(i-1).name || `插口 ${i}`">
+              <span class="plug-name-text">{{ remarks[i-1] || getPlug(i-1).name || `插口 ${i}` }}</span>
               <span v-if="remarks[i-1]" class="remark-indicator" title="本地备注">*</span>
             </div>
             <input v-else 
@@ -630,7 +654,7 @@ const gridStyle = computed(() => {
             >
           </template>
           <template v-else>
-            <div class="plug-name">插口 {{ i }} (未知)</div>
+            <div class="plug-name"><span class="plug-name-text">插口 {{ i }} (未知)</span></div>
           </template>
         </div>
         
@@ -829,18 +853,43 @@ const gridStyle = computed(() => {
   text-align: center;
   transition: all 0.3s ease;
   border: 2px solid transparent;
+  display: flex;
+  flex-direction: column;
 }
 .plug-item.on {
   border-color: var(--card-on-border);
   background: var(--card-on-bg);
 }
+.plug-header {
+  flex-shrink: 0;
+}
+.plug-body {
+  margin-top: auto;
+  padding-top: 8px;
+}
 .plug-name {
+  min-height: 2.6em;
+  max-height: 2.6em;
+  line-height: 1.3;
   margin-bottom: 15px;
   font-weight: 500;
   cursor: pointer;
   border-bottom: 1px dashed var(--border-color);
-  display: inline-block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-primary);
+  padding: 0 2px;
+  box-sizing: border-box;
+}
+.plug-name-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  word-break: normal;
+  max-width: 100%;
 }
 .switch-btn {
   width: 60px;
