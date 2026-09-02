@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -13,12 +14,15 @@ type PowerCollector struct {
 	store  *PowerStore
 	client mqtt.Client
 	done   chan struct{}
+	mu     sync.Mutex
+	lastTS map[string]int64 // mac -> 上次采样时间，用于计算积分间隔
 }
 
 func NewPowerCollector(store *PowerStore) *PowerCollector {
 	return &PowerCollector{
-		store: store,
-		done:  make(chan struct{}),
+		store:  store,
+		done:   make(chan struct{}),
+		lastTS: make(map[string]int64),
 	}
 }
 
@@ -96,10 +100,28 @@ func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 			// 负值功率：疑似设备功耗芯片损坏，不采集统计
 			return
 		}
+		now := time.Now().Unix()
+		pc.mu.Lock()
+		last, had := pc.lastTS[mac]
+		pc.lastTS[mac] = now
+		pc.mu.Unlock()
+
+		interval := 2.0 // 默认 2 秒（首次采样或重置用）
+		if had && now > last {
+			interval = float64(now - last)
+		}
+		if interval < 0.5 {
+			interval = 0.5
+		}
+		if interval > 30 {
+			interval = 30 // 防止断线重连后产生巨大间隔
+		}
+
 		pc.store.Insert(PowerSample{
-			MAC:    mac,
-			TS:     time.Now().Unix(),
-			PowerW: powerW,
+			MAC:       mac,
+			TS:        now,
+			PowerW:    powerW,
+			IntervalS: interval,
 		})
 	}
 }

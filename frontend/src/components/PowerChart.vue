@@ -117,8 +117,12 @@ const loadData = async () => {
     if (myToken !== currentToken) return
 
     const isHourly = range.granularity === '1h'
+    // lightweight-charts 时间轴按 UTC 渲染；此处把 unix 秒换算成浏览器本地时区
+    // （lightweight-charts 收到的时间戳当 UTC 显示，所以 +本地偏移 后显示的即是本地时间）
+    const tzOffset = -new Date().getTimezoneOffset() * 60 // 秒
     const points = (data || []).map(d => {
-      const ts = parseInt(d.bucket_ts || d.ts)
+      const rawTs = parseInt(d.bucket_ts || d.ts)
+      const ts = rawTs + tzOffset
       const value = isHourly ? (d.avg_w || 0) : (d.avg_w !== undefined ? d.avg_w : d.power_w || 0)
       return { time: ts, value: parseFloat(value.toFixed(1)) }
     }).filter(p => p.time > 0)

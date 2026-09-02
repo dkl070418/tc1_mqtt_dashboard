@@ -13,9 +13,10 @@ import (
 )
 
 type PowerSample struct {
-	MAC    string
-	TS     int64
-	PowerW float64
+	MAC       string
+	TS        int64
+	PowerW    float64
+	IntervalS float64 // 本次采样距上一条的时间间隔（秒），用于能量积分
 }
 
 type PowerStore struct {
@@ -158,7 +159,7 @@ func (s *PowerStore) flushBatch(batch []PowerSample) error {
 			return err
 		}
 		bucket := (s.TS / 60) * 60
-		energyWh := s.PowerW / 3600.0
+		energyWh := s.PowerW * s.IntervalS / 3600.0
 		if _, err := aggStmt.Exec(s.MAC, bucket, s.PowerW, s.PowerW, s.PowerW, energyWh); err != nil {
 			return err
 		}
@@ -297,9 +298,10 @@ func (s *PowerStore) GetSummary(mac string) (map[string]any, error) {
 		"mac": mac,
 	}
 
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix()
+	loc := time.FixedZone("CST", 8*3600)
+	now := time.Now().In(loc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).Unix()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).Unix()
 
 	var currentPower sql.NullFloat64
 	s.db.QueryRow(`SELECT power_w FROM power_samples

@@ -362,6 +362,29 @@ const toggleLedLock = () => {
     })
 }
 
+// ---- 设备时间同步 (v1 固件) ----
+const timeSyncState = ref('') // '' | 'sending' | 'ok' | 'fail'
+const timeSyncMsg = ref('')
+
+const syncDeviceTime = () => {
+  if (isV2.value) return
+  const unix = Math.floor(Date.now() / 1000)
+  timeSyncState.value = 'sending'
+  timeSyncMsg.value = '正在同步设备时间...'
+  // v1 固件通过 setting.time 接受 Unix 时间戳
+  emit('send-cmd', {
+    mac: props.device.mac,
+    setting: { time: unix }
+  })
+  // 因设备不回显确认，仅提示已发送（发送走 MQTT，成功率极高）
+  setTimeout(() => {
+    timeSyncState.value = 'ok'
+    const now = new Date()
+    const pad = n => String(n).padStart(2, '0')
+    timeSyncMsg.value = `已发送时间同步 ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}（设备时钟须与本地一致才会按时执行定时任务）`
+  }, 1500)
+}
+
 // v2: total socket toggle
 const toggleTotalSocket = () => {
     const current = props.device.total_socket === 1 ? 0 : 1
@@ -547,7 +570,16 @@ const gridStyle = computed(() => {
               >
                🌙 夜间
               </button>
+              <button 
+                class="toggle-chip"
+                :class="{ active: timeSyncState === 'sending' }"
+                @click="syncDeviceTime"
+                title="同步设备时间（发送当前时间到设备固件）"
+              >
+               🕐 同步时间
+              </button>
             </template>
+            <div v-if="timeSyncMsg" class="time-sync-msg">{{ timeSyncMsg }}</div>
         </div>
       </div>
     </div>
@@ -903,5 +935,14 @@ const gridStyle = computed(() => {
     cursor: pointer;
     font-size: 0.8em;
     margin-top: 5px;
+}
+.time-sync-msg {
+    font-size: 0.8em;
+    color: #4caf50;
+    background: rgba(76, 175, 80, 0.08);
+    padding: 6px 10px;
+    border-radius: 4px;
+    margin-top: 8px;
+    width: 100%;
 }
 </style>
