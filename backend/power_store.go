@@ -218,6 +218,8 @@ func (s *PowerStore) cleanupLoop() {
 func (s *PowerStore) cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// 原始秒级采样：保留 7 天
 	cutoff := time.Now().AddDate(0, 0, -7).Unix()
 	result, err := s.db.Exec("DELETE FROM power_samples WHERE ts < ?", cutoff)
 	if err != nil {
@@ -226,6 +228,17 @@ func (s *PowerStore) cleanup() {
 	}
 	if n, _ := result.RowsAffected(); n > 0 {
 		log.Printf("清理了 %d 条 7 天前的原始采样数据", n)
+	}
+
+	// 分钟聚合：保留 6 个月，防止数据库无限增长
+	aggCutoff := time.Now().AddDate(0, -6, 0).Unix()
+	result2, err := s.db.Exec("DELETE FROM power_agg_1min WHERE bucket_ts < ?", aggCutoff)
+	if err != nil {
+		log.Printf("清理分钟聚合数据失败: %v", err)
+		return
+	}
+	if n, _ := result2.RowsAffected(); n > 0 {
+		log.Printf("清理了 %d 条 6 个月前的分钟聚合数据", n)
 	}
 }
 
