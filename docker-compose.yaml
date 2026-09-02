@@ -12,7 +12,7 @@ services:
       - ./mosquitto/log:/mosquitto/log
 
   backend:
-    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-backend:v1.4.3
+    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-backend:v1.4.10
     container_name: mqtt-mgr-backend
     restart: unless-stopped
     volumes:
@@ -23,13 +23,15 @@ services:
       - ./mosquitto/config/acl:/data/acl
       # 控制台设备显示名称，独立于 ACL 和 Mosquitto 数据持久化
       - ./backend/data:/data/metadata
+      # 功耗统计数据（本地卷，勿放 SMB/网络盘，SQLite 会锁失败）
+      - mqtt_power_data:/data/power
       # Docker socket，用于 docker exec mosquitto_passwd
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - mosquitto
 
   nginx:
-    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-nginx:v1.4.3
+    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-nginx:v1.4.10
     container_name: mqtt-mgr-nginx
     restart: unless-stopped
     ports:
@@ -37,3 +39,6 @@ services:
     depends_on:
       - backend
       - mosquitto
+
+volumes:
+  mqtt_power_data:
