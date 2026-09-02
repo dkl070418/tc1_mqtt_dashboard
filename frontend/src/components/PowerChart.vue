@@ -36,10 +36,11 @@ const RANGES = [
 const initChart = () => {
   if (!containerRef.value) return
   chart = createChart(containerRef.value, {
-    layout: {
-      background: { type: ColorType.Solid, color: 'transparent' },
-      textColor: '#999',
-    },
+layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: '#999',
+        attributionLogo: false,
+      },
     grid: {
       vertLines: { color: 'rgba(128,128,128,0.1)' },
       horzLines: { color: 'rgba(128,128,128,0.1)' },
@@ -191,10 +192,6 @@ watch(() => props.power, (val) => {
     </div>
     <div class="power-header" v-show="!chipBrokenRef">
       <div class="power-summary" v-if="summaryRef">
-        <div class="summary-item">
-          <span class="summary-label">当前功率</span>
-          <span class="summary-value">{{ (summaryRef.current_power_w || 0).toFixed(1) }} W</span>
-        </div>
         <div class="summary-item">
           <span class="summary-label">今日用电</span>
           <span class="summary-value">{{ formatKwh(summaryRef.today_energy_kwh) }} kWh</span>
