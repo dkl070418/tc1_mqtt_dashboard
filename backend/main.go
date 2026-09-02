@@ -24,6 +24,8 @@ type Config struct {
 	ACLPath             string     `yaml:"acl_path"`
 	DeviceMetadataPath  string     `yaml:"device_metadata_path"`
 	DeviceConfigPath    string     `yaml:"device_config_path"`
+	PowerDBPath         string     `yaml:"power_db_path"`
+	PowerCollectEnabled bool       `yaml:"power_collect_enabled"`
 	ACLPatterns         []string   `yaml:"acl_patterns"`
 	AdminUsername       string     `yaml:"admin_username"`
 	AdminPassword       string     `yaml:"admin_password"`
@@ -112,6 +114,22 @@ func main() {
 	if cfg.DeviceConfigPath == "" {
 		cfg.DeviceConfigPath = "/data/metadata/device_config.json"
 	}
+	if cfg.PowerDBPath == "" {
+		cfg.PowerDBPath = "/data/metadata/power_stats.db"
+	}
+	if cfg.PowerCollectEnabled {
+		var err error
+		powerStore, err = NewPowerStore(cfg.PowerDBPath)
+		if err != nil {
+			log.Printf("警告: 初始化功耗存储失败: %v", err)
+		} else {
+			broker := "tcp://mosquitto:1883"
+			collector := NewPowerCollector(powerStore)
+			if err := collector.Start(broker, cfg.AdminUsername, cfg.AdminPassword); err != nil {
+				log.Printf("警告: 功耗采集器启动失败: %v", err)
+			}
+		}
+	}
 
 	// 从环境变量加载 MQTT URI（优先级高于配置文件）
 	if mqttUri := os.Getenv("MQTT_URI"); mqttUri != "" {
@@ -144,6 +162,8 @@ func main() {
 	mux.HandleFunc("/api/admin/device-metadata/", adminAuth(handleAdminDeviceMetadata))
 	mux.HandleFunc("/api/admin/device-config", adminAuth(handleAdminGetDeviceConfig))
 	mux.HandleFunc("/api/admin/device-config/", adminAuth(handleAdminPutDeviceConfig))
+	mux.HandleFunc("/api/admin/power/query", adminAuth(handlePowerQuery))
+	mux.HandleFunc("/api/admin/power/summary", adminAuth(handlePowerSummary))
 	mux.HandleFunc("/api/mqtt/login", handleMQTTLogin)
 	mux.HandleFunc("/api/admin/users", adminAuth(handleUsers))
 	mux.HandleFunc("/api/admin/user/", adminAuth(handleUserOps))

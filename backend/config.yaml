@@ -5,6 +5,8 @@ host_passwd_path: "/data/passwd"                   # 容器外passwd文件路径
 acl_path: "/data/acl"                              # ACL文件路径（Docker挂载路径）
 device_metadata_path: "/data/metadata/device_metadata.json" # 控制台设备显示名称持久化文件
 device_config_path: "/data/metadata/device_config.json"     # 插口名/备注/定时任务配置持久化文件
+power_db_path: "/data/metadata/power_stats.db"              # 功耗统计数据 SQLite 文件
+power_collect_enabled: true                                 # 是否启用功耗采集
 
 # ACL模式列表, %s 会被替换为用户的MAC地址(大写和小写各一份)
 acl_patterns:

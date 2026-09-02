@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, reactive, onMounted, watch } from 'vue'
 import TaskEditor from './TaskEditor.vue'
+import PowerChart from './PowerChart.vue'
 
 const props = defineProps({
   device: {
@@ -629,6 +630,8 @@ const gridStyle = computed(() => {
         </div>
       </div>
     </div>
+
+    <PowerChart :mac="device.mac" />
 
     <!-- 简化版，后续可以添加更多设置 -->
     <details v-if="!isV2" class="advanced-settings">
