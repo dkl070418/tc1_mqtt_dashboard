@@ -1,12 +1,15 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import mqtt from 'mqtt'
 import MqttConfig from './components/MqttConfig.vue'
 import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v1.5.1'
+const APP_VERSION = 'v1.6.0'
+
+const router = useRouter()
 
 // State
 const client = ref(null)
@@ -29,6 +32,11 @@ const STORAGE_ADMIN_DEVICES = 'mqtt_admin_devices'
 const adminManaged = ref(Boolean(
   localStorage.getItem('mqtt_admin_token') && localStorage.getItem('mqtt_admin_mqtt_config')
 ))
+
+// 访客页面开关（服务器 /api/register/status 下发）
+// false 且未登录管理员 → 整页跳转管理员登录页
+// 管理员登录态无需等待，直接渲染
+const gateReady = ref(adminManaged.value)
 
 const loadStoredDevices = (key) => {
   const saved = localStorage.getItem(key)
@@ -64,7 +72,16 @@ const handleAdminLogin = () => {
   switchDeviceSource(true)
   loadDeviceConfigs()
 }
-const handleAdminLogout = () => switchDeviceSource(false)
+const handleAdminLogout = () => {
+  switchDeviceSource(false)
+  // 退出管理员后若访客页面已被关闭，回到管理员登录页
+  fetch('/api/register/status', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.guest_page_enabled === false) router.replace('/admin')
+    })
+    .catch(() => {})
+}
 const handleUserDevicesSync = (serverMacs) => {
   if (adminManaged.value || !Array.isArray(serverMacs)) return
   let changed = false
@@ -94,7 +111,20 @@ const handleAdminDevicesUpdated = (event) => {
     .forEach(entry => subscribeDevice(entry))
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 访客开关校验：关闭且未登录管理员 → 跳管理员登录页（后端同时已封禁 MQTT 登录接口）
+  try {
+    const res = await fetch('/api/register/status', { cache: 'no-store' })
+    const data = await res.json().catch(() => ({}))
+    if (data.guest_page_enabled === false && !localStorage.getItem('mqtt_admin_token')) {
+      router.replace('/admin')
+      return
+    }
+  } catch (e) {
+    console.warn('获取访客开关失败，按开启处理', e)
+  }
+  gateReady.value = true
+
   deviceList.value = loadStoredDevices(adminManaged.value ? STORAGE_ADMIN_DEVICES : STORAGE_DEVICES)
   selectedMac.value = deviceList.value[0]?.mac || null
   if (adminManaged.value) loadDeviceConfigs()
@@ -592,7 +622,10 @@ applyTheme(theme.value)
 </script>
 
 <template>
-  <div class="container">
+  <div v-if="!gateReady" class="welcome gate-loading">
+    <p>加载中...</p>
+  </div>
+  <div v-else class="container">
     <div class="header-bar">
         <h1>zTC1 管理终端</h1>
         <div class="header-actions">
@@ -602,10 +635,11 @@ applyTheme(theme.value)
           <button class="settings-btn" @click="openImportExport" title="配置迁移">⚙️</button>
         </div>
     </div>
-    
+
     <ImportExport ref="importExportRef" />
-    
-    <MqttConfig 
+
+    <MqttConfig
+      v-if="gateReady"
       :connected="connected"
       :connection-state="connectionState"
       :connection-error="connectionError"

@@ -221,13 +221,15 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			"acl_path":              cfg.ACLPath,
 			"acl_patterns":          cfg.ACLPatterns,
 			"register_level":        cfg.RegisterLevel,
+			"guest_page_enabled":    guestPageEnabled(),
 			"contact_info":          cfg.ContactInfo,
 		})
 
 	case http.MethodPut:
 		var req struct {
-			RegisterLevel *int    `json:"register_level"`
-			ContactInfo   *string `json:"contact_info"`
+			RegisterLevel    *int    `json:"register_level"`
+			GuestPageEnabled *bool   `json:"guest_page_enabled"`
+			ContactInfo      *string `json:"contact_info"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonError(w, "请求格式错误", http.StatusBadRequest)
@@ -240,6 +242,9 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			cfg.RegisterLevel = *req.RegisterLevel
+		}
+		if req.GuestPageEnabled != nil {
+			cfg.GuestPageEnabled = req.GuestPageEnabled
 		}
 		if req.ContactInfo != nil {
 			cfg.ContactInfo = *req.ContactInfo

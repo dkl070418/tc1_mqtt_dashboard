@@ -1,5 +1,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
 
 // Auth state
 const token = ref(localStorage.getItem('mqtt_admin_token') || '')
@@ -42,6 +45,7 @@ const addMacLoading = ref(false)
 
 // Config edit
 const configEditLevel = ref(null)
+const configEditGuest = ref(true)
 const configEditContact = ref('')
 const configSaveMsg = ref('')
 const configSaveMsgType = ref('')
@@ -150,6 +154,8 @@ const login = async () => {
       saveAdminSession(data)
       window.dispatchEvent(new CustomEvent('mqtt-admin-login'))
       await loadAll()
+      // 管理员登录成功 → 直接进入 MQTT 控制台
+      router.push('/')
     } else {
       loginError.value = data.error || '登录失败'
     }
@@ -192,6 +198,7 @@ const loadConfig = async () => {
   if (ok) {
     configData.value = data
     configEditLevel.value = data.register_level ?? 1
+    configEditGuest.value = data.guest_page_enabled !== false
     configEditContact.value = data.contact_info || ''
   }
 }
@@ -290,10 +297,15 @@ const saveConfig = async () => {
   }
   const { ok, data } = await apiFetch('/api/admin/config', {
     method: 'PUT',
-    body: JSON.stringify({ register_level: level, contact_info: configEditContact.value })
+    body: JSON.stringify({
+      register_level: level,
+      guest_page_enabled: configEditGuest.value,
+      contact_info: configEditContact.value
+    })
   })
   if (ok) {
     configData.value.register_level = level
+    configData.value.guest_page_enabled = configEditGuest.value
     configData.value.contact_info = configEditContact.value
     configSaveMsg.value = '已保存'
     configSaveMsgType.value = 'success'
@@ -490,6 +502,15 @@ onMounted(async () => {
                 <option :value="0">0 — 禁止注册</option>
                 <option :value="1">1 — 任意注册</option>
                 <option :value="2">2 — 邮箱验证</option>
+              </select>
+            </span>
+          </div>
+          <div class="config-item">
+            <span class="config-label">访客页面</span>
+            <span class="config-value">
+              <select v-model="configEditGuest" class="config-select">
+                <option :value="true">开启 — 允许 MQTT 用户使用控制台</option>
+                <option :value="false">关闭 — 仅管理员可登录控制台</option>
               </select>
             </span>
           </div>

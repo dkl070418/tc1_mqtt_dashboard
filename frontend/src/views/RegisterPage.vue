@@ -5,6 +5,7 @@ const registerLevel = ref(1)
 const contactInfo = ref('')
 const mqttUri = ref('')
 const mqttWsUri = ref('')
+const guestClosed = ref(false)
 const loading = ref(false)
 const message = ref('')
 const messageType = ref('')
@@ -35,6 +36,7 @@ onMounted(async () => {
     contactInfo.value = data.contact_info || ''
     mqttUri.value = data.mqtt_uri || ''
     mqttWsUri.value = data.mqtt_ws_uri || ''
+    guestClosed.value = data.guest_page_enabled === false
   } catch (e) {
     console.error('获取注册状态失败', e)
   }
@@ -222,8 +224,8 @@ const doQuickAddMac = () => {
     </div>
 
     <!-- 关闭注册 -->
-    <div v-if="registerLevel === 0" class="card">
-      <p class="closed-msg">注册功能已关闭</p>
+    <div v-if="registerLevel === 0 || guestClosed" class="card">
+      <p class="closed-msg">{{ guestClosed ? '访客功能已关闭' : '注册功能已关闭' }}</p>
       <p v-if="contactInfo" class="contact">{{ contactInfo }}</p>
     </div>
 

@@ -41,10 +41,11 @@ func handleRegisterStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, map[string]interface{}{
-		"register_level": cfg.RegisterLevel,
-		"contact_info":   cfg.ContactInfo,
-		"mqtt_uri":       cfg.MQTTUri,
-		"mqtt_ws_uri":    cfg.MQTTWSUri,
+		"register_level":      cfg.RegisterLevel,
+		"contact_info":        cfg.ContactInfo,
+		"mqtt_uri":            cfg.MQTTUri,
+		"mqtt_ws_uri":         cfg.MQTTWSUri,
+		"guest_page_enabled":  guestPageEnabled(),
 	})
 }
 
@@ -57,6 +58,12 @@ func handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.RegisterLevel != 2 {
 		jsonError(w, "当前注册模式不需要邮箱验证", http.StatusBadRequest)
+		return
+	}
+
+	// 访客页面关闭时，验证码发送一并封禁（防刷邮件）
+	if !guestPageEnabled() {
+		jsonError(w, "访客功能已关闭，注册暂不可用", http.StatusForbidden)
 		return
 	}
 
@@ -96,6 +103,12 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if cfg.RegisterLevel == 0 {
 		jsonError(w, "注册功能已关闭", http.StatusForbidden)
+		return
+	}
+
+	// 访客页面关闭时，注册入口一并封禁
+	if !guestPageEnabled() {
+		jsonError(w, "访客功能已关闭，注册暂不可用", http.StatusForbidden)
 		return
 	}
 
@@ -186,6 +199,12 @@ func handleAddMac(w http.ResponseWriter, r *http.Request) {
 
 	if cfg.RegisterLevel == 0 {
 		jsonError(w, "注册功能已关闭", http.StatusForbidden)
+		return
+	}
+
+	// 访客页面关闭时，追加 MAC 入口一并封禁
+	if !guestPageEnabled() {
+		jsonError(w, "访客功能已关闭，请使用管理员账号登录", http.StatusForbidden)
 		return
 	}
 

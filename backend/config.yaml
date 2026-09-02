@@ -23,6 +23,13 @@ admin_password: "admin123"
 #   2 = 仅邮箱注册（需邮箱验证码激活）
 register_level: 1
 
+# 访客页面开关（MQTT 用户控制台）:
+#   true  = 允许普通 MQTT 用户使用控制台
+#   false = 关闭访客入口，未登录管理员一律进入管理员登录页，
+#           同时封禁 /api/mqtt/login 和注册类接口
+# 未配置时默认 true，兼容旧配置文件
+guest_page_enabled: true
+
 # 联系维护者信息（显示在注册页）
 contact_info: "如需帮助请联系管理员"
 

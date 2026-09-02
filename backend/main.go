@@ -30,6 +30,7 @@ type Config struct {
 	AdminUsername       string     `yaml:"admin_username"`
 	AdminPassword       string     `yaml:"admin_password"`
 	RegisterLevel       int        `yaml:"register_level"`
+	GuestPageEnabled    *bool      `yaml:"guest_page_enabled"`
 	ContactInfo         string     `yaml:"contact_info"`
 	MQTTUri             string     `yaml:"mqtt_uri"`
 	MQTTWSUri           string     `yaml:"mqtt_ws_uri"`
@@ -40,6 +41,12 @@ type Config struct {
 var cfg Config
 
 var configPath string
+
+// guestPageEnabled 访客页面开关（MQTT 用户控制台）。
+// 配置未设置时默认开启，兼容旧版 config.yaml。
+func guestPageEnabled() bool {
+	return cfg.GuestPageEnabled == nil || *cfg.GuestPageEnabled
+}
 
 func safeReturnTo(raw string) string {
 	if raw == "" {
