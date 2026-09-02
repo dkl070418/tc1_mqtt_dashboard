@@ -66,18 +66,40 @@ const formatRepeat = (bits) => {
   return res.length > 0 ? '周' + res.join('') : '一次'
 }
 
+const pad = (n) => String(n).padStart(2, '0')
+
+// 摘要行直接启停：已存在则翻转 on，否则按默认任务启用
+const toggleOn = () => {
+  if (props.task) {
+    emit('save', { ...props.task, on: props.task.on === 1 ? 0 : 1 })
+  } else {
+    emit('save', {
+      hour: 12, minute: 0, repeat: 0, action: 1, on: 1
+    })
+  }
+}
+
 </script>
 
 <template>
   <div class="task-editor">
-    <div v-if="!editing" class="task-summary" @click="startEdit">
-      <div v-if="task && task.on" class="active-task">
-        <span class="time">{{ String(task.hour).padStart(2,'0') }}:{{ String(task.minute).padStart(2,'0') }}</span>
-        <span class="action" :class="task.action ? 'on' : 'off'">{{ task.action ? '开' : '关' }}</span>
-        <span class="repeat">{{ formatRepeat(task.repeat) }}</span>
-      </div>
-      <div v-else class="empty-task">
-        任务 {{ index + 1 }} (未启用)
+    <div v-if="!editing" class="task-summary" @click="startEdit" :title="`点击编辑 任务 ${index + 1}`">
+      <div class="ts-row">
+        <span class="ts-badge">任务 {{ index + 1 }}</span>
+        <template v-if="task && task.on === 1">
+          <span class="ts-time">{{ pad(task.hour) }}:{{ pad(task.minute) }}</span>
+          <span class="ts-chip" :class="task.action ? 'on' : 'off'">{{ task.action ? '开' : '关' }}</span>
+          <span class="ts-dot">·</span>
+          <span class="ts-repeat">{{ formatRepeat(task.repeat) }}</span>
+        </template>
+        <span v-else class="ts-empty">（未启用）</span>
+        <span class="ts-spacer"></span>
+        <button
+          class="ts-switch"
+          :class="{ on: task?.on === 1 }"
+          :title="task?.on === 1 ? '停用此任务' : '启用此任务'"
+          @click.stop="toggleOn"
+        ></button>
       </div>
     </div>
 
@@ -86,10 +108,10 @@ const formatRepeat = (bits) => {
         <input type="number" v-model="localTask.hour" min="0" max="23"> :
         <input type="number" v-model="localTask.minute" min="0" max="59">
       </div>
-      
+
       <div class="days-picker">
-        <button 
-            v-for="(d, i) in days" 
+        <button
+            v-for="(d, i) in days"
             :key="i"
             @click="toggleDay(i)"
             :class="{ selected: isDaySelect(i) }"
@@ -98,14 +120,14 @@ const formatRepeat = (bits) => {
 
       <div class="options">
         <label>
-            动作: 
+            动作:
             <select v-model="localTask.action">
                 <option :value="1">开启</option>
                 <option :value="0">关闭</option>
             </select>
         </label>
         <label>
-            启用: 
+            启用:
             <input type="checkbox" v-model="localTask.on" :true-value="1" :false-value="0">
         </label>
       </div>
@@ -120,35 +142,84 @@ const formatRepeat = (bits) => {
 
 <style scoped>
 .task-editor {
-  border-top: 1px solid var(--border-light);
-  padding: 8px 0;
+  padding: 6px 0;
 }
 .task-summary {
-  cursor: pointer;
-  padding: 5px;
+  border: 1px solid var(--border-light);
   background: var(--bg-secondary);
-  border-radius: 4px;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
 }
 .task-summary:hover {
-    background: var(--bg-hover);
+  background: var(--bg-hover);
+  border-color: var(--border-color);
 }
-.active-task {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    font-size: 0.9em;
+.ts-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.time { font-weight: bold; }
-.action.on { color: green; }
-.action.off { color: red; }
-.repeat { color: var(--text-muted); font-size: 0.8em; }
+.ts-badge {
+  font-weight: 600;
+  font-size: 0.95em;
+  color: var(--text-primary);
+  flex: none;
+}
+.ts-spacer {
+  flex: 1;
+}
+.ts-time { font-weight: bold; color: var(--text-primary); flex: none; }
+.ts-chip {
+  font-size: 0.85em;
+  padding: 0 5px;
+  border-radius: 3px;
+  line-height: 1.4;
+  flex: none;
+}
+.ts-chip.on { color: #4caf50; background: rgba(76, 175, 80, 0.12); }
+.ts-chip.off { color: #e53935; background: rgba(229, 57, 53, 0.12); }
+.ts-dot { color: var(--text-muted); flex: none; }
+.ts-repeat { color: var(--text-muted); flex: none; }
+.ts-empty { color: var(--text-muted); }
 
-.empty-task { color: var(--text-muted); font-size: 0.8em; }
+.ts-switch {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  position: relative;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  flex: none;
+}
+.ts-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: left 0.2s, background 0.2s;
+}
+.ts-switch.on {
+  background: #4caf50;
+  border-color: #4caf50;
+}
+.ts-switch.on::after {
+  left: 18px;
+  background: #fff;
+}
 
 .edit-form {
     padding: 10px;
     background: var(--bg-card);
-    border: 1px solid var(--border-light);
+    border: 1px solid var(--border-color);
     margin-top: 5px;
 }
 .time-picker input {

@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
-import TaskEditor from './TaskEditor.vue'
+import TimerModal from './TimerModal.vue'
 import PowerChart from './PowerChart.vue'
 
 const props = defineProps({
@@ -177,15 +177,15 @@ const persistRemarks = () => {
   }
 }
 
-// Timer Logic
-const expandedTaskPlug = ref(-1)
+// Timer Modal
+const timerPlug = ref(-1)
 
-const toggleTaskView = (index) => {
-  if (expandedTaskPlug.value === index) {
-    expandedTaskPlug.value = -1
-  } else {
-    expandedTaskPlug.value = index
-  }
+const openTimer = (index) => {
+  timerPlug.value = index
+}
+
+const closeTimer = () => {
+  timerPlug.value = -1
 }
 
 const updateTask = (plugIndex, taskIndex, taskData) => {
@@ -212,6 +212,21 @@ const getTask = (plugIndex, taskIndex) => {
   const deviceTask = plug?.setting?.[`task_${taskIndex}`]
   if (deviceTask) return deviceTask
   return tasksCache[plugIndex]?.[`task_${taskIndex}`] || null
+}
+
+// 插口当前显示名（本地备注优先）
+const getPlugDisplayName = (index) => {
+  return remarks[index] || getPlug(index)?.name || `插口 ${index + 1}`
+}
+
+// 已启用的定时任务数量
+const getEnabledTaskCount = (plugIndex) => {
+  let c = 0
+  for (let i = 0; i < 5; i++) {
+    const t = getTask(plugIndex, i)
+    if (t && t.on === 1) c++
+  }
+  return c
 }
 
 // 将定时任务配置同步到后端（跨端一致，任务执行仍由设备固件负责）
@@ -669,25 +684,24 @@ const gridStyle = computed(() => {
           </button>
           
           <div class="plug-actions">
-            <button class="text-btn" @click="toggleTaskView(i-1)">
-              定时 {{ expandedTaskPlug === i-1 ? '▲' : '▼' }}
+            <button class="text-btn" @click="openTimer(i-1)">
+              定时<span v-if="getEnabledTaskCount(i-1) > 0" class="task-badge">{{ getEnabledTaskCount(i-1) }}</span>
             </button>
           </div>
-        </div>
-
-        <div v-if="expandedTaskPlug === i-1" class="task-list">
-             <div v-for="t in 5" :key="t-1" class="task-item">
-                <TaskEditor 
-                    :task="getTask(i-1, t-1)" 
-                    :index="t-1"
-                    @save="data => updateTask(i-1, t-1, data)" 
-                />
-             </div>
         </div>
       </div>
     </div>
 
     <PowerChart :mac="device.mac" :power="device.power" />
+
+    <TimerModal
+      :show="timerPlug !== -1"
+      :plug-index="timerPlug"
+      :plug-name="timerPlug >= 0 ? getPlugDisplayName(timerPlug) : ''"
+      :get-task="getTask"
+      :update-task="updateTask"
+      @close="closeTimer"
+    />
 
     <!-- 简化版，后续可以添加更多设置 -->
     <details v-if="!isV2" class="advanced-settings">
@@ -977,13 +991,34 @@ const gridStyle = computed(() => {
     border-radius: 4px;
     cursor: pointer;
 }
+.plug-actions {
+    margin-top: 12px;
+}
 .text-btn {
-    border: none;
-    background: none;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
     color: #2196f3;
     cursor: pointer;
     font-size: 0.8em;
-    margin-top: 5px;
+    padding: 5px 14px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.2s;
+}
+.text-btn:hover {
+    border-color: #2196f3;
+    background: var(--bg-hover);
+}
+.task-badge {
+    background: #2196f3;
+    color: white;
+    font-size: 0.75em;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 8px;
+    font-weight: bold;
 }
 .time-sync-msg {
     font-size: 0.8em;
