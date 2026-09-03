@@ -67,6 +67,7 @@ func handlePowerSummary(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]any{
 			"mac": mac, "current_power_w": 0,
 			"today_energy_kwh": 0, "month_energy_kwh": 0,
+			"enabled": false, // 功耗采集未启用（power_collect_enabled）
 		})
 		return
 	}
@@ -75,5 +76,6 @@ func handlePowerSummary(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "查询失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	summary["enabled"] = true
 	jsonResp(w, summary)
 }

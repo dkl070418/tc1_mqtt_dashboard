@@ -20,6 +20,8 @@ const summaryRef = ref(null)
 const loadingRef = ref(false)
 const errorRef = ref('')
 const chipBrokenRef = ref(false)
+const powerEnabledRef = ref(true)   // 后端功耗采集是否启用
+const hasDataRef = ref(false)       // 当前时间段是否有数据
 
 let chart = null
 let series = null
@@ -81,7 +83,9 @@ const loadSummary = async () => {
       headers: { Authorization: `Bearer ${token}` }
     })
     if (res.ok) {
-      summaryRef.value = await res.json()
+      const data = await res.json()
+      summaryRef.value = data
+      powerEnabledRef.value = data.enabled !== false
     }
   } catch (e) {
     console.warn('加载功耗统计失败', e)
@@ -133,6 +137,7 @@ const loadData = async () => {
       return
     }
     series.setData(points)
+    hasDataRef.value = points.length > 0
     chart.timeScale().fitContent()
   } catch (e) {
     errorRef.value = '网络错误: ' + e.message
@@ -194,7 +199,11 @@ watch(() => props.power, (val) => {
     <div v-if="chipBrokenRef" class="chip-broken">
       ⚠️ 该设备疑似功耗芯片损坏，不进行统计
     </div>
-    <div class="power-header" v-show="!chipBrokenRef">
+    <div v-else-if="!powerEnabledRef" class="chip-broken">
+      📊 功耗采集未启用：后端未开启 <code>power_collect_enabled</code>，或未配置 <code>power_db_path</code>，此设备暂无功耗数据。
+    </div>
+    <div v-show="chipBrokenRef" style="display:none"></div>
+    <div class="power-header" v-show="powerEnabledRef && !chipBrokenRef">
       <div class="power-summary" v-if="summaryRef">
         <div class="summary-item">
           <span class="summary-label">今日用电</span>
@@ -216,10 +225,13 @@ watch(() => props.power, (val) => {
       </div>
     </div>
 
-    <div ref="containerRef" class="chart-container" v-show="!chipBrokenRef"></div>
+    <div ref="containerRef" class="chart-container" v-show="powerEnabledRef && !chipBrokenRef"></div>
 
     <div v-if="loadingRef" class="power-loading">加载中...</div>
-    <div v-if="errorRef && !chipBrokenRef" class="power-error">{{ errorRef }}</div>
+    <div v-else-if="powerEnabledRef && !chipBrokenRef && !hasDataRef" class="power-loading">
+      所选时间段暂无功耗数据（设备可能未产生或已过清理周期）
+    </div>
+    <div v-if="errorRef && !chipBrokenRef && powerEnabledRef" class="power-error">{{ errorRef }}</div>
   </div>
 </template>
 
