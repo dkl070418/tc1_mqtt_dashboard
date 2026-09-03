@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v1.7.1'
+const APP_VERSION = 'v1.8.0'
 
 const router = useRouter()
 
@@ -554,6 +554,21 @@ const selectedDeviceState = computed(() => {
   return state
 })
 
+// 获取定时任务执行日志（推断型，管理员接口）
+const fetchTaskLogs = async ({ mac, plug, limit }) => {
+  const token = localStorage.getItem('mqtt_admin_token')
+  if (!token) throw new Error('需要管理员登录后查看')
+  const params = new URLSearchParams({ mac })
+  if (plug !== undefined && plug >= 0) params.set('plug', String(plug))
+  params.set('limit', String(limit || 500))
+  const res = await fetch(`/api/admin/task-logs?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || '获取任务日志失败')
+  return data
+}
+
 const selectedDeviceHasData = computed(() => {
   if (!selectedMac.value) return false
   const state = devices[selectedMac.value]
@@ -711,12 +726,13 @@ applyTheme(theme.value)
       </div>
 
       <div class="content-area">
-        <DeviceControl 
-          v-if="selectedDeviceState && selectedDeviceHasData" 
-          :device="selectedDeviceState" 
+        <DeviceControl
+          v-if="selectedDeviceState && selectedDeviceHasData"
+          :device="selectedDeviceState"
           :save-display-name="saveDeviceDisplayName"
           :device-config="serverDeviceConfig"
           :save-device-config="saveDeviceConfig"
+          :fetch-task-logs="fetchTaskLogs"
           @send-cmd="sendCommand"
         />
         <div v-else-if="deviceList.length === 0" class="empty-state">

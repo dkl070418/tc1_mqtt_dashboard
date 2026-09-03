@@ -19,6 +19,10 @@ const props = defineProps({
   saveDeviceConfig: {
     type: Function,
     default: null
+  },
+  fetchTaskLogs: {
+    type: Function,
+    default: null
   }
 })
 
@@ -205,6 +209,73 @@ const updateTask = (plugIndex, taskIndex, taskData) => {
   if (!tasksCache[plugIndex]) tasksCache[plugIndex] = {}
   tasksCache[plugIndex][`task_${taskIndex}`] = taskData
   persistTasks()
+}
+
+// ---- 倒计时（占用任务5/task_4）----
+const countdownMetas = reactive({}) // { plugIndex: { target_ts, action } }
+
+const loadCountdownMetas = () => {
+  Object.keys(countdownMetas).forEach(k => delete countdownMetas[k])
+  try {
+    const saved = JSON.parse(localStorage.getItem(`ztc1_countdown_${props.device.mac}`) || '{}')
+    Object.assign(countdownMetas, saved)
+  } catch (e) { /* ignore */ }
+}
+
+const persistCountdownMetas = () => {
+  const out = {}
+  Object.keys(countdownMetas).forEach(k => { out[k] = countdownMetas[k] })
+  localStorage.setItem(`ztc1_countdown_${props.device.mac}`, JSON.stringify(out))
+}
+
+watch(() => props.device.mac, () => loadCountdownMetas(), { immediate: true })
+
+// 给 TimerModal 用的响应式快照
+const countdownMetaForPlug = computed(() => {
+  const m = countdownMetas[timerPlug.value]
+  if (!m || !m.target_ts) return null
+  return m
+})
+
+// 保存倒计时：先同步设备时间（防漂移），再把目标时刻写入 task_4
+const saveCountdown = async (hours, minutes, action) => {
+  const plugIndex = timerPlug.value
+  if (plugIndex < 0) return
+
+  // 1. 同步设备时间（v1 固件时钟漂移会直接影响触发精度）
+  emit('send-cmd', {
+    mac: props.device.mac,
+    setting: { time: Math.floor(Date.now() / 1000) }
+  })
+
+  // 2. 计算目标时刻并写入 task_4（一次性任务，直接覆盖）
+  const target = new Date(Date.now() + (hours * 3600 + minutes * 60) * 1000)
+  const taskData = {
+    hour: target.getHours(),
+    minute: target.getMinutes(),
+    repeat: 0,
+    action,
+    on: 1
+  }
+  updateTask(plugIndex, 4, taskData)
+
+  // 3. 记录元数据用于界面倒计时显示（仅显示用，执行仍由固件负责）
+  countdownMetas[plugIndex] = {
+    target_ts: Math.floor(target.getTime() / 1000),
+    action
+  }
+  persistCountdownMetas()
+}
+
+// 停止倒计时：停用 task_4（保留任务字段，on:0）
+const stopCountdown = () => {
+  const plugIndex = timerPlug.value
+  if (plugIndex < 0) return
+  const existing = getTask(plugIndex, 4)
+  const taskData = existing ? { ...existing, on: 0 } : { hour: 0, minute: 0, repeat: 0, action: 1, on: 0 }
+  updateTask(plugIndex, 4, taskData)
+  delete countdownMetas[plugIndex]
+  persistCountdownMetas()
 }
 
 const getTask = (plugIndex, taskIndex) => {
@@ -492,6 +563,64 @@ const gridStyle = computed(() => {
     }
 })
 
+// ---- 定时任务执行日志（推断型，仅供参考）----
+const taskLogOpen = ref(false)
+const taskLogs = ref([])
+const taskLogPlug = ref(-1) // -1 = 全部插口
+const taskLogLoading = ref(false)
+const taskLogError = ref('')
+const taskLogLoadedFor = ref('') // mac+plug 组合，切换后重新加载
+
+const loadTaskLogs = async () => {
+  if (!props.fetchTaskLogs || !props.device.mac) return
+  taskLogLoading.value = true
+  taskLogError.value = ''
+  try {
+    const data = await props.fetchTaskLogs({
+      mac: props.device.mac,
+      plug: taskLogPlug.value,
+      limit: 500
+    })
+    taskLogs.value = Array.isArray(data.logs) ? data.logs : []
+    taskLogLoadedFor.value = `${props.device.mac}:${taskLogPlug.value}`
+  } catch (e) {
+    taskLogError.value = e?.message || '获取任务日志失败'
+  } finally {
+    taskLogLoading.value = false
+  }
+}
+
+watch(taskLogPlug, () => {
+  if (taskLogOpen.value) loadTaskLogs()
+})
+
+const onTaskLogToggle = (e) => {
+  taskLogOpen.value = e.target.open
+  if (e.target.open) {
+    const key = `${props.device.mac}:${taskLogPlug.value}`
+    if (taskLogLoadedFor.value !== key) loadTaskLogs()
+  }
+}
+
+const formatLogTime = (ts) => {
+  if (!ts) return '-'
+  return new Date(ts * 1000).toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  })
+}
+
+const taskLogTypeText = (entry) => {
+  if (entry.type === 'task') return `定时触发（任务 ${(entry.task_idx ?? -1) + 1}）`
+  if (entry.type === 'missed') return '未观察到执行'
+  return '手动操作（推断）'
+}
+
+const taskLogActionText = (entry) => {
+  if (entry.type === 'missed') return entry.action === 1 ? '应开启' : '应关闭'
+  return entry.cur_on === 1 ? '关 → 开' : '开 → 关'
+}
+
+
 </script>
 
 <template>
@@ -700,6 +829,9 @@ const gridStyle = computed(() => {
       :plug-name="timerPlug >= 0 ? getPlugDisplayName(timerPlug) : ''"
       :get-task="getTask"
       :update-task="updateTask"
+      :save-countdown="saveCountdown"
+      :stop-countdown="stopCountdown"
+      :countdown-meta="countdownMetaForPlug"
       @close="closeTimer"
     />
 
@@ -731,6 +863,37 @@ const gridStyle = computed(() => {
             </div>
             <button @click="performOta" class="primary-btn">开始升级</button>
         </div>
+      </div>
+    </details>
+
+    <!-- 定时任务执行日志（推断型） -->
+    <details v-if="!isV2" class="advanced-settings task-log-details" @toggle="onTaskLogToggle">
+      <summary>定时任务执行日志 <span class="log-fyi-tag">仅供参考</span></summary>
+      <div class="settings-content">
+        <p class="task-log-disclaimer">
+          日志由服务器根据设备状态变化与任务配置自动推断生成，仅供参考，不保证与实际触发完全一致。保留 15 天。
+        </p>
+        <div class="task-log-toolbar">
+          <select v-model="taskLogPlug" class="log-plug-select">
+            <option :value="-1">全部插口</option>
+            <option v-for="i in 6" :key="i-1" :value="i-1">{{ getPlugDisplayName(i-1) }}</option>
+          </select>
+          <button class="small-btn" @click="loadTaskLogs" :disabled="taskLogLoading">
+            {{ taskLogLoading ? '加载中...' : '刷新' }}
+          </button>
+        </div>
+        <p v-if="taskLogError" class="task-log-error">{{ taskLogError }}</p>
+        <div v-else-if="taskLogs.length === 0 && !taskLogLoading" class="task-log-empty">
+          暂无记录（设备上线后产生的状态变化会记录在此）
+        </div>
+        <ul v-else class="task-log-list">
+          <li v-for="(entry, idx) in taskLogs" :key="idx" :class="entry.type">
+            <span class="tl-time">{{ formatLogTime(entry.ts) }}</span>
+            <span class="tl-plug">{{ getPlugDisplayName(entry.plug_idx) }}</span>
+            <span class="tl-action">{{ taskLogActionText(entry) }}</span>
+            <span class="tl-type" :class="entry.type">{{ taskLogTypeText(entry) }}</span>
+          </li>
+        </ul>
       </div>
     </details>
   </div>
@@ -1028,5 +1191,106 @@ const gridStyle = computed(() => {
     border-radius: 4px;
     margin-top: 8px;
     width: 100%;
+}
+
+/* 定时任务执行日志 */
+.task-log-details {
+  margin-bottom: 20px;
+}
+.log-fyi-tag {
+  font-size: 0.7em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255, 152, 0, 0.15);
+  color: #f57c00;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.task-log-disclaimer {
+  font-size: 0.78em;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-left: 3px solid #ff9800;
+  border-radius: 0 6px 6px 0;
+  padding: 8px 12px;
+  margin: 0 0 10px;
+}
+.task-log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.log-plug-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.85em;
+}
+.task-log-error {
+  font-size: 0.85em;
+  color: #e53935;
+  margin: 0;
+}
+.task-log-empty {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 12px 0;
+}
+.task-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.task-log-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 0.85em;
+  flex-wrap: wrap;
+}
+.task-log-list li:last-child { border-bottom: none; }
+.tl-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  min-width: 92px;
+}
+.tl-plug {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+.tl-action {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.tl-type {
+  margin-left: auto;
+  font-size: 0.9em;
+  padding: 1px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.tl-type.task {
+  color: #4caf50;
+  background: rgba(76, 175, 80, 0.12);
+}
+.tl-type.manual {
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+}
+.tl-type.missed {
+  color: #f57c00;
+  background: rgba(255, 152, 0, 0.12);
 }
 </style>

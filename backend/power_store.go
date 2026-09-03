@@ -19,11 +19,23 @@ type PowerSample struct {
 	IntervalS float64 // 本次采样距上一条的时间间隔（秒），用于能量积分
 }
 
+// TaskLogRecord 插口状态翻转记录，作为定时任务执行日志的原始数据。
+// 注意：固件不主动上报"任务已触发"，此处只记录真实发生的状态变化，
+// 是否由定时任务触发由查询接口结合任务配置推断。
+type TaskLogRecord struct {
+	MAC     string
+	PlugIdx int
+	PrevOn  int
+	CurOn   int
+	TS      int64
+}
+
 type PowerStore struct {
-	db       *sql.DB
-	mu       sync.Mutex
-	insertCh chan PowerSample
-	done     chan struct{}
+	db        *sql.DB
+	mu        sync.Mutex
+	insertCh  chan PowerSample
+	taskLogCh chan TaskLogRecord
+	done      chan struct{}
 }
 
 func NewPowerStore(dbPath string) (*PowerStore, error) {
@@ -39,15 +51,17 @@ func NewPowerStore(dbPath string) (*PowerStore, error) {
 	db.SetMaxIdleConns(1)
 
 	store := &PowerStore{
-		db:       db,
-		insertCh: make(chan PowerSample, 5000),
-		done:     make(chan struct{}),
+		db:        db,
+		insertCh:  make(chan PowerSample, 5000),
+		taskLogCh: make(chan TaskLogRecord, 1000),
+		done:      make(chan struct{}),
 	}
 	if err := store.initSchema(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	go store.insertLoop()
+	go store.taskLogLoop()
 	go store.aggLoop()
 	go store.cleanupLoop()
 	return store, nil
@@ -80,7 +94,16 @@ func (s *PowerStore) initSchema() error {
 		energy_kwh REAL NOT NULL DEFAULT 0,
 		sample_count INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (mac, bucket_ts)
-	);`
+	);
+	CREATE TABLE IF NOT EXISTS task_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		mac TEXT NOT NULL,
+		plug_idx INTEGER NOT NULL,
+		prev_on INTEGER NOT NULL,
+		cur_on INTEGER NOT NULL,
+		ts INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_task_logs_mac_ts ON task_logs(mac, ts);`
 	_, err := s.db.Exec(schema)
 	return err
 }
@@ -91,6 +114,70 @@ func (s *PowerStore) Insert(sample PowerSample) {
 	default:
 		log.Printf("警告: 写入通道已满，丢弃采样数据 mac=%s ts=%d", sample.MAC, sample.TS)
 	}
+}
+
+// InsertTaskLog 异步写入插口状态翻转记录（通道满时丢弃，避免阻塞 MQTT 处理）
+func (s *PowerStore) InsertTaskLog(rec TaskLogRecord) {
+	select {
+	case s.taskLogCh <- rec:
+	default:
+		log.Printf("警告: 任务日志通道已满，丢弃记录 mac=%s plug=%d ts=%d", rec.MAC, rec.PlugIdx, rec.TS)
+	}
+}
+
+func (s *PowerStore) taskLogLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	var batch []TaskLogRecord
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		s.mu.Lock()
+		err := s.flushTaskLogs(batch)
+		s.mu.Unlock()
+		if err != nil {
+			log.Printf("任务日志批量写入失败: %v", err)
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case rec := <-s.taskLogCh:
+			batch = append(batch, rec)
+			if len(batch) >= 100 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-s.done:
+			flush()
+			return
+		}
+	}
+}
+
+func (s *PowerStore) flushTaskLogs(batch []TaskLogRecord) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT INTO task_logs(mac, plug_idx, prev_on, cur_on, ts) VALUES(?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range batch {
+		if _, err := stmt.Exec(r.MAC, r.PlugIdx, r.PrevOn, r.CurOn, r.TS); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *PowerStore) insertLoop() {
@@ -241,6 +328,49 @@ func (s *PowerStore) cleanup() {
 	if n, _ := result2.RowsAffected(); n > 0 {
 		log.Printf("清理了 %d 条 6 个月前的分钟聚合数据", n)
 	}
+
+	// 任务执行日志：保留 15 天
+	taskCutoff := time.Now().AddDate(0, 0, -15).Unix()
+	result3, err := s.db.Exec("DELETE FROM task_logs WHERE ts < ?", taskCutoff)
+	if err != nil {
+		log.Printf("清理任务日志失败: %v", err)
+		return
+	}
+	if n, _ := result3.RowsAffected(); n > 0 {
+		log.Printf("清理了 %d 条 15 天前的任务执行日志", n)
+	}
+}
+
+// QueryTaskLogs 查询插口状态翻转记录（时间倒序）
+func (s *PowerStore) QueryTaskLogs(mac string, plugIdx *int, limit int) ([]TaskLogRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := "SELECT ts, plug_idx, prev_on, cur_on FROM task_logs WHERE mac = ?"
+	args := []any{mac}
+	if plugIdx != nil {
+		query += " AND plug_idx = ?"
+		args = append(args, *plugIdx)
+	}
+	query += " ORDER BY ts DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []TaskLogRecord
+	for rows.Next() {
+		var r TaskLogRecord
+		r.MAC = mac
+		if err := rows.Scan(&r.TS, &r.PlugIdx, &r.PrevOn, &r.CurOn); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
 }
 
 func (s *PowerStore) QueryPower(mac string, from, to int64, granularity string) ([]map[string]any, error) {
@@ -326,6 +456,7 @@ func (s *PowerStore) GetSummary(mac string) (map[string]any, error) {
 func (s *PowerStore) Close() {
 	close(s.done)
 	close(s.insertCh)
+	close(s.taskLogCh)
 	s.db.Close()
 }
 

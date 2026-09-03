@@ -3,7 +3,8 @@ import { reactive, watch, ref } from 'vue'
 
 const props = defineProps({
   task: Object,
-  index: Number
+  index: Number,
+  countdownActive: Boolean  // 该槽位正被倒计时占用（仅任务5）
 })
 
 const emit = defineEmits(['save'])
@@ -85,7 +86,9 @@ const toggleOn = () => {
   <div class="task-editor">
     <div v-if="!editing" class="task-summary" @click="startEdit" :title="`点击编辑 任务 ${index + 1}`">
       <div class="ts-row">
-        <span class="ts-badge">任务 {{ index + 1 }}</span>
+        <span class="ts-badge">
+          {{ countdownActive ? '⏱ 倒计时' : `任务 ${index + 1}` }}
+        </span>
         <template v-if="task && task.on === 1">
           <span class="ts-time">{{ pad(task.hour) }}:{{ pad(task.minute) }}</span>
           <span class="ts-chip" :class="task.action ? 'on' : 'off'">{{ task.action ? '开' : '关' }}</span>

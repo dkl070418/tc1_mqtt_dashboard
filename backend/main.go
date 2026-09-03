@@ -175,6 +175,7 @@ func main() {
 	mux.HandleFunc("/api/admin/device-config/", adminAuth(handleAdminPutDeviceConfig))
 	mux.HandleFunc("/api/admin/power/query", adminAuth(handlePowerQuery))
 	mux.HandleFunc("/api/admin/power/summary", adminAuth(handlePowerSummary))
+	mux.HandleFunc("/api/admin/task-logs", adminAuth(handleTaskLogs))
 	mux.HandleFunc("/api/mqtt/login", handleMQTTLogin)
 	mux.HandleFunc("/api/admin/users", adminAuth(handleUsers))
 	mux.HandleFunc("/api/admin/user/", adminAuth(handleUserOps))

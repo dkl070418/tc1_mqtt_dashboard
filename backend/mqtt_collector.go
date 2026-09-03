@@ -11,11 +11,12 @@ import (
 )
 
 type PowerCollector struct {
-	store  *PowerStore
-	client mqtt.Client
-	done   chan struct{}
-	mu     sync.Mutex
-	lastTS map[string]int64 // mac -> 上次采样时间，用于计算积分间隔
+	store   *PowerStore
+	client  mqtt.Client
+	done    chan struct{}
+	mu      sync.Mutex
+	lastTS  map[string]int64 // mac -> 上次采样时间，用于计算积分间隔
+	plugOn  map[string]map[int]int // mac -> (插口索引 -> 上次 on 状态)，用于检测状态翻转
 }
 
 func NewPowerCollector(store *PowerStore) *PowerCollector {
@@ -23,6 +24,7 @@ func NewPowerCollector(store *PowerStore) *PowerCollector {
 		store:  store,
 		done:   make(chan struct{}),
 		lastTS: make(map[string]int64),
+		plugOn: make(map[string]map[int]int),
 	}
 }
 
@@ -87,6 +89,10 @@ func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 		if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
 			return
 		}
+
+		// 先记录插口状态翻转（即使功率异常也不遗漏状态变化）
+		pc.detectPlugFlips(mac, payload)
+
 		var powerW float64
 		if p, ok := payload["power"]; ok {
 			switch v := p.(type) {
@@ -122,6 +128,55 @@ func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 			TS:        now,
 			PowerW:    powerW,
 			IntervalS: interval,
+		})
+	}
+}
+
+// detectPlugFlips 检测 plug_N.on 状态翻转并入库。
+// 首次观察只建立基线不记录，避免进程启动时把当前状态当作翻转。
+func (pc *PowerCollector) detectPlugFlips(mac string, payload map[string]any) {
+	now := time.Now().Unix()
+	type plugFlip struct {
+		plug, prev, cur int
+	}
+	var flips []plugFlip
+
+	pc.mu.Lock()
+	state := pc.plugOn[mac]
+	for i := 0; i < 6; i++ {
+		raw, ok := payload[fmt.Sprintf("plug_%d", i)]
+		if !ok {
+			continue
+		}
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		onVal, ok := obj["on"].(float64)
+		if !ok {
+			continue
+		}
+		cur := int(onVal)
+		if state == nil {
+			state = make(map[int]int)
+			pc.plugOn[mac] = state
+		}
+		prev, seen := state[i]
+		state[i] = cur
+		if !seen || prev == cur {
+			continue
+		}
+		flips = append(flips, plugFlip{plug: i, prev: prev, cur: cur})
+	}
+	pc.mu.Unlock()
+
+	for _, f := range flips {
+		pc.store.InsertTaskLog(TaskLogRecord{
+			MAC:     mac,
+			PlugIdx: f.plug,
+			PrevOn:  f.prev,
+			CurOn:   f.cur,
+			TS:      now,
 		})
 	}
 }
