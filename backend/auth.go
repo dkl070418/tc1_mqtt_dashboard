@@ -11,9 +11,10 @@ import (
 )
 
 type AdminLoginReq struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	TOTPCode string `json:"totp_code"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	TOTPCode    string `json:"totp_code"`
+	SessionDays int    `json:"session_days"`
 }
 
 type AdminLoginResp struct {
@@ -39,10 +40,11 @@ type TokenPayload struct {
 	Exp      int64  `json:"exp"`
 }
 
-func generateToken(username string) string {
+// generateToken 签发管理员会话 token，有效期由登录时选择（白名单校验，天）
+func generateToken(username string, sessionDays int) string {
 	payload := TokenPayload{
 		Username: username,
-		Exp:      time.Now().Add(24 * time.Hour).Unix(),
+		Exp:      time.Now().Add(time.Duration(sessionDays) * 24 * time.Hour).Unix(),
 	}
 	data, _ := json.Marshal(payload)
 	encoded := hex.EncodeToString(data)
@@ -126,6 +128,13 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 登录有效期白名单（天），缺失或非法值回落默认 7 天
+	switch req.SessionDays {
+	case 1, 7, 30, 180, 365:
+	default:
+		req.SessionDays = 7
+	}
+
 	if req.Username != cfg.AdminUsername || req.Password != cfg.AdminPassword {
 		jsonError(w, "用户名或密码错误", http.StatusUnauthorized)
 		return
@@ -137,7 +146,7 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := adminSessionResp(generateToken(req.Username))
+	resp, err := adminSessionResp(generateToken(req.Username, req.SessionDays))
 	if err != nil {
 		jsonError(w, "读取管理员关联设备失败", http.StatusInternalServerError)
 		return

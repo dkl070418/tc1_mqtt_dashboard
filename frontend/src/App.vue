@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v1.7.0'
+const APP_VERSION = 'v1.7.1'
 
 const router = useRouter()
 

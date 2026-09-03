@@ -8,7 +8,7 @@ const router = useRouter()
 // Auth state
 const token = ref(localStorage.getItem('mqtt_admin_token') || '')
 const adminMqttUsername = ref('')
-const loginForm = ref({ username: '', password: '', totp_code: '' })
+const loginForm = ref({ username: '', password: '', totp_code: '', session_days: 7 })
 const loginError = ref('')
 const loginLoading = ref(false)
 const totpEnabled = ref(false)      // 服务端两步验证开关（register/status 下发）
@@ -165,7 +165,8 @@ const login = async () => {
       body: JSON.stringify({
         username: loginForm.value.username,
         password: loginForm.value.password,
-        totp_code: loginForm.value.totp_code.trim()
+        totp_code: loginForm.value.totp_code.trim(),
+        session_days: loginForm.value.session_days
       })
     })
     const data = await res.json()
@@ -468,6 +469,16 @@ onMounted(async () => {
           autocomplete="one-time-code"
           @keyup.enter="login"
         />
+      </div>
+      <div class="form-group">
+        <label>登录有效期</label>
+        <select v-model.number="loginForm.session_days" class="config-select">
+          <option :value="1">1 天</option>
+          <option :value="7">7 天</option>
+          <option :value="30">1 个月（30 天）</option>
+          <option :value="180">半年（180 天）</option>
+          <option :value="365">一年（365 天）</option>
+        </select>
       </div>
       <div v-if="loginError" class="msg error">{{ loginError }}</div>
       <button class="submit-btn" @click="login" :disabled="loginLoading">
@@ -856,7 +867,8 @@ h2, h3 {
   font-weight: 500;
   color: var(--text-secondary);
 }
-.form-group input {
+.form-group input,
+.form-group select {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border-color);
@@ -866,7 +878,8 @@ h2, h3 {
   font-size: 1em;
   box-sizing: border-box;
 }
-.form-group input:focus {
+.form-group input:focus,
+.form-group select:focus {
   outline: none;
   border-color: #2196f3;
   box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
