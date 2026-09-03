@@ -161,15 +161,16 @@ func handleMQTTLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 访客页面关闭时，普通 MQTT 用户无法通过前端登录
-	if !guestPageEnabled() {
-		jsonError(w, "访客功能已关闭，请使用管理员账号登录", http.StatusForbidden)
-		return
-	}
-
 	var req MQTTLoginReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "请求格式错误", http.StatusBadRequest)
+		return
+	}
+
+	// 访客页面关闭时，普通 MQTT 用户无法通过前端登录；
+	// 管理员控制台同样走此接口校验，必须放行管理员（仍需密码验证）
+	if !guestPageEnabled() && req.Username != cfg.AdminUsername {
+		jsonError(w, "访客功能已关闭，请使用管理员账号登录", http.StatusForbidden)
 		return
 	}
 
