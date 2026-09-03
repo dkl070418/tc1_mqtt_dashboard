@@ -29,6 +29,7 @@ type Config struct {
 	ACLPatterns         []string   `yaml:"acl_patterns"`
 	AdminUsername       string     `yaml:"admin_username"`
 	AdminPassword       string     `yaml:"admin_password"`
+	TOTPSecret          string     `yaml:"totp_secret"`
 	RegisterLevel       int        `yaml:"register_level"`
 	GuestPageEnabled    *bool      `yaml:"guest_page_enabled"`
 	ContactInfo         string     `yaml:"contact_info"`
@@ -165,6 +166,9 @@ func main() {
 	mux.HandleFunc("/api/register/verify", handleVerifyEmail)
 	mux.HandleFunc("/api/register/add-mac", handleAddMac)
 	mux.HandleFunc("/api/admin/login", handleAdminLogin)
+	mux.HandleFunc("/api/admin/totp/setup", adminAuth(handleTOTPSetup))
+	mux.HandleFunc("/api/admin/totp/enable", adminAuth(handleTOTPEnable))
+	mux.HandleFunc("/api/admin/totp/disable", adminAuth(handleTOTPDisable))
 	mux.HandleFunc("/api/admin/session", adminAuth(handleAdminSession))
 	mux.HandleFunc("/api/admin/device-metadata/", adminAuth(handleAdminDeviceMetadata))
 	mux.HandleFunc("/api/admin/device-config", adminAuth(handleAdminGetDeviceConfig))

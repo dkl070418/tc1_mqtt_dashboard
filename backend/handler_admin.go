@@ -222,6 +222,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			"acl_patterns":          cfg.ACLPatterns,
 			"register_level":        cfg.RegisterLevel,
 			"guest_page_enabled":    guestPageEnabled(),
+			"totp_enabled":          cfg.TOTPSecret != "",
 			"contact_info":          cfg.ContactInfo,
 		})
 

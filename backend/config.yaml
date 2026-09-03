@@ -17,6 +17,11 @@ acl_patterns:
 admin_username: "admin"
 admin_password: "admin123"
 
+# 两步验证（TOTP）密钥，base32 格式；留空 = 未开启
+# 开启方式: 管理员入口 → 配置 → 两步验证 → 启用并扫码绑定
+# 手机丢失时: 清空此字段并重启容器即可解除
+# totp_secret: ""
+
 # 注册等级:
 #   0 = 禁止注册
 #   1 = 任意注册

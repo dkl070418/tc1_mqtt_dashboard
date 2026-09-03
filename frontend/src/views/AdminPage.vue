@@ -1,15 +1,30 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import QRCode from 'qrcode'
 
 const router = useRouter()
 
 // Auth state
 const token = ref(localStorage.getItem('mqtt_admin_token') || '')
 const adminMqttUsername = ref('')
-const loginForm = ref({ username: '', password: '' })
+const loginForm = ref({ username: '', password: '', totp_code: '' })
 const loginError = ref('')
 const loginLoading = ref(false)
+const totpEnabled = ref(false)      // 服务端两步验证开关（register/status 下发）
+const showTotpField = ref(false)    // 登录报错提示需要验证码时强制显示
+
+// TOTP 绑定/关闭弹窗
+const totpModal = ref(false)
+const totpDisableModal = ref(false)
+const totpSecret = ref('')
+const totpUri = ref('')
+const totpCodeInput = ref('')
+const totpDisableCode = ref('')
+const totpMsg = ref('')
+const totpMsgType = ref('')
+const totpLoading = ref(false)
+const qrCanvas = ref(null)
 
 // Users
 const users = ref([])
@@ -147,7 +162,11 @@ const login = async () => {
     const res = await fetch('/api/admin/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(loginForm.value)
+      body: JSON.stringify({
+        username: loginForm.value.username,
+        password: loginForm.value.password,
+        totp_code: loginForm.value.totp_code.trim()
+      })
     })
     const data = await res.json()
     if (res.ok) {
@@ -158,6 +177,8 @@ const login = async () => {
       router.push('/')
     } else {
       loginError.value = data.error || '登录失败'
+      // 后端要求动态验证码但表单还没显示时，展开输入框
+      if (loginError.value.includes('验证码')) showTotpField.value = true
     }
   } catch (e) {
     loginError.value = '网络错误'
@@ -316,6 +337,61 @@ const saveConfig = async () => {
   }
 }
 
+// ---- 两步验证（TOTP）----
+const openTotpSetup = async () => {
+  const { ok, data } = await apiFetch('/api/admin/totp/setup', { method: 'POST' })
+  if (!ok) {
+    alert(data.error || '生成密钥失败')
+    return
+  }
+  totpSecret.value = data.secret
+  totpUri.value = data.otpauth_uri
+  totpCodeInput.value = ''
+  totpMsg.value = ''
+  totpModal.value = true
+  await nextTick()
+  if (qrCanvas.value) {
+    QRCode.toCanvas(qrCanvas.value, totpUri.value, { width: 200, margin: 2 }, (err) => {
+      if (err) console.error(err)
+    })
+  }
+}
+
+const confirmTotpEnable = async () => {
+  totpLoading.value = true
+  const { ok, data } = await apiFetch('/api/admin/totp/enable', {
+    method: 'POST',
+    body: JSON.stringify({ secret: totpSecret.value, code: totpCodeInput.value.trim() })
+  })
+  totpLoading.value = false
+  if (ok) {
+    totpModal.value = false
+    totpEnabled.value = true
+    if (configData.value) configData.value.totp_enabled = true
+  } else {
+    totpMsg.value = data.error || '验证失败'
+    totpMsgType.value = 'error'
+  }
+}
+
+const confirmTotpDisable = async () => {
+  totpLoading.value = true
+  const { ok, data } = await apiFetch('/api/admin/totp/disable', {
+    method: 'POST',
+    body: JSON.stringify({ code: totpDisableCode.value.trim() })
+  })
+  totpLoading.value = false
+  if (ok) {
+    totpDisableModal.value = false
+    totpDisableCode.value = ''
+    totpEnabled.value = false
+    if (configData.value) configData.value.totp_enabled = false
+  } else {
+    totpMsg.value = data.error || '验证失败'
+    totpMsgType.value = 'error'
+  }
+}
+
 const openAddMacModal = (username) => {
   addMacTarget.value = username
   addMacValue.value = ''
@@ -346,6 +422,12 @@ const submitAddMac = async () => {
 }
 
 onMounted(async () => {
+  // 登录页需提前知道是否开启了两步验证（公开接口，只返回开关不返回密钥）
+  fetch('/api/register/status', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(d => { totpEnabled.value = d.totp_enabled === true })
+    .catch(() => {})
+
   if (!token.value) return
   if (await refreshSession()) {
     await loadAll()
@@ -375,6 +457,17 @@ onMounted(async () => {
       <div class="form-group">
         <label>密码</label>
         <input v-model="loginForm.password" type="password" placeholder="管理员密码" @keyup.enter="login" />
+      </div>
+      <div class="form-group" v-if="totpEnabled || showTotpField">
+        <label>动态验证码</label>
+        <input
+          v-model="loginForm.totp_code"
+          inputmode="numeric"
+          maxlength="6"
+          placeholder="Authenticator 6 位动态码"
+          autocomplete="one-time-code"
+          @keyup.enter="login"
+        />
       </div>
       <div v-if="loginError" class="msg error">{{ loginError }}</div>
       <button class="submit-btn" @click="login" :disabled="loginLoading">
@@ -506,6 +599,16 @@ onMounted(async () => {
             </span>
           </div>
           <div class="config-item">
+            <span class="config-label">两步验证</span>
+            <span class="config-value">
+              <template v-if="totpEnabled">
+                <span class="pattern-tag">已开启</span>
+                <button class="del-btn-inline" @click="totpDisableModal = true; totpDisableCode = ''; totpMsg = ''">关闭</button>
+              </template>
+              <button v-else class="edit-btn" @click="openTotpSetup">启用两步验证</button>
+            </span>
+          </div>
+          <div class="config-item">
             <span class="config-label">访客页面</span>
             <span class="config-value">
               <select v-model="configEditGuest" class="config-select">
@@ -553,6 +656,59 @@ onMounted(async () => {
         <div class="modal-actions">
           <button class="submit-btn" @click="submitAddMac" :disabled="addMacLoading">{{ addMacLoading ? '提交中...' : '确认追加' }}</button>
           <button class="cancel-btn" @click="addMacModal = false">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOTP 绑定弹窗 -->
+    <div v-if="totpModal" class="modal-overlay" @click.self="totpModal = false">
+      <div class="modal">
+        <h3>启用两步验证</h3>
+        <p class="totp-hint">1. 用 Google/Microsoft Authenticator 等扫码添加账号</p>
+        <div class="qr-wrap"><canvas ref="qrCanvas"></canvas></div>
+        <p class="totp-hint">2. 密钥（请截图备份，换手机可重新扫码）：</p>
+        <p class="totp-secret">{{ totpSecret }}</p>
+        <div class="form-group">
+          <label>输入手机上当前的 6 位动态码确认</label>
+          <input
+            v-model="totpCodeInput"
+            inputmode="numeric"
+            maxlength="6"
+            placeholder="6 位动态码"
+            @keyup.enter="confirmTotpEnable"
+          />
+        </div>
+        <div v-if="totpMsg" class="msg error">{{ totpMsg }}</div>
+        <div class="modal-actions">
+          <button class="submit-btn" @click="confirmTotpEnable" :disabled="totpLoading">
+            {{ totpLoading ? '验证中...' : '确认开启' }}
+          </button>
+          <button class="cancel-btn" @click="totpModal = false">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOTP 关闭弹窗 -->
+    <div v-if="totpDisableModal" class="modal-overlay" @click.self="totpDisableModal = false">
+      <div class="modal">
+        <h3>关闭两步验证</h3>
+        <p class="totp-hint">为防止他人误关，请输入当前动态码确认</p>
+        <div class="form-group">
+          <label>动态验证码</label>
+          <input
+            v-model="totpDisableCode"
+            inputmode="numeric"
+            maxlength="6"
+            placeholder="6 位动态码"
+            @keyup.enter="confirmTotpDisable"
+          />
+        </div>
+        <div v-if="totpMsg" class="msg error">{{ totpMsg }}</div>
+        <div class="modal-actions">
+          <button class="del-confirm-btn" @click="confirmTotpDisable" :disabled="totpLoading">
+            {{ totpLoading ? '验证中...' : '确认关闭' }}
+          </button>
+          <button class="cancel-btn" @click="totpDisableModal = false">取消</button>
         </div>
       </div>
     </div>
@@ -939,6 +1095,43 @@ h2, h3 {
   color: var(--text-primary);
   font-size: 0.9em;
   width: 280px;
+}
+/* TOTP */
+.del-btn-inline {
+  margin-left: 8px;
+  padding: 4px 12px;
+  border: 1px solid #d32f2f;
+  border-radius: 4px;
+  background: none;
+  color: #d32f2f;
+  cursor: pointer;
+  font-size: 0.85em;
+}
+.del-btn-inline:hover { background: #ffebee; }
+.qr-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0;
+  background: #fff;
+  border-radius: 8px;
+  margin: 10px 0;
+}
+.totp-hint {
+  font-size: 0.88em;
+  color: var(--text-secondary);
+  margin: 6px 0;
+  text-align: left;
+}
+.totp-secret {
+  font-family: monospace;
+  font-size: 0.9em;
+  letter-spacing: 1px;
+  background: var(--bg-secondary);
+  padding: 8px 10px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  text-align: center;
+  margin: 4px 0 12px;
 }
 /* Modal */
 .modal-overlay {

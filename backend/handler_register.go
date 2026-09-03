@@ -46,6 +46,7 @@ func handleRegisterStatus(w http.ResponseWriter, r *http.Request) {
 		"mqtt_uri":            cfg.MQTTUri,
 		"mqtt_ws_uri":         cfg.MQTTWSUri,
 		"guest_page_enabled":  guestPageEnabled(),
+		"totp_enabled":        cfg.TOTPSecret != "",
 	})
 }
 

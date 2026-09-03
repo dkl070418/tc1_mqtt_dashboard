@@ -13,6 +13,7 @@ import (
 type AdminLoginReq struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	TOTPCode string `json:"totp_code"`
 }
 
 type AdminLoginResp struct {
@@ -127,6 +128,12 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 	if req.Username != cfg.AdminUsername || req.Password != cfg.AdminPassword {
 		jsonError(w, "用户名或密码错误", http.StatusUnauthorized)
+		return
+	}
+
+	// 两步验证：密钥已配置则必须携带有效动态码（防暴力，见 nginx 限速）
+	if cfg.TOTPSecret != "" && !verifyTOTP(cfg.TOTPSecret, req.TOTPCode) {
+		jsonError(w, "动态验证码错误或已过期", http.StatusUnauthorized)
 		return
 	}
 
