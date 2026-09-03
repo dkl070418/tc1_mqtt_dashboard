@@ -283,6 +283,21 @@ const queryAllStates = () => {
   deviceList.value.forEach(entry => queryDeviceState(typeof entry === 'object' ? entry.mac : entry))
 }
 
+// 手动强制刷新所有设备插口状态（头部按钮）
+const refreshToast = ref('')
+let refreshToastTimer = null
+const refreshAllStates = () => {
+  if (!client.value || !connected.value) {
+    refreshToast.value = '尚未连接 MQTT，无法刷新'
+  } else {
+    queryAllStates()
+    autoCleanStaleCountdowns()
+    refreshToast.value = '已请求刷新全部设备状态'
+  }
+  if (refreshToastTimer) clearTimeout(refreshToastTimer)
+  refreshToastTimer = setTimeout(() => { refreshToast.value = '' }, 2500)
+}
+
 // 清理已到执行时间的一次性倒计时任务：固件执行一次后不会自动停用，
 // 这里主动给设备下发 task_4 on=0，避免任务5一直停留在"启用"状态。
 const autoCleanStaleCountdowns = () => {
@@ -711,11 +726,16 @@ applyTheme(theme.value)
           <router-link to="/register" class="nav-link">MQTT 用户注册</router-link>
           <router-link to="/admin" class="nav-link">管理员入口</router-link>
           <button class="theme-btn" @click="cycleTheme" :title="themeTitle">{{ themeIcon }}</button>
+          <button class="refresh-btn" @click="refreshAllStates" :title="'强制刷新全部设备插口状态'">🔄</button>
           <button class="settings-btn" @click="openImportExport" title="配置迁移">⚙️</button>
         </div>
     </div>
 
     <ImportExport ref="importExportRef" />
+
+    <Transition name="refresh-toast">
+      <div v-if="refreshToast" class="refresh-toast">{{ refreshToast }}</div>
+    </Transition>
 
     <MqttConfig
       v-if="gateReady"
@@ -902,6 +922,44 @@ body {
 }
 .settings-btn:hover, .theme-btn:hover {
     opacity: 1;
+}
+.refresh-btn {
+    font-size: 1.3em;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 5px;
+    color: var(--text-primary);
+    line-height: 1;
+    opacity: 0.8;
+}
+.refresh-btn:hover {
+    opacity: 1;
+    transform: rotate(45deg);
+    transition: transform 0.3s;
+}
+.refresh-toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #323232;
+    color: #fff;
+    padding: 10px 24px;
+    border-radius: 8px;
+    font-size: 0.95em;
+    z-index: 10000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    pointer-events: none;
+}
+.refresh-toast-enter-active,
+.refresh-toast-leave-active {
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.refresh-toast-enter-from,
+.refresh-toast-leave-to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px);
 }
 .nav-link {
     font-size: 0.9em;
