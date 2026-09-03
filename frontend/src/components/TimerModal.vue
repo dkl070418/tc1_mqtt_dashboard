@@ -49,6 +49,10 @@ const countdownActive = computed(() =>
   props.countdownMeta && props.countdownMeta.target_ts > nowTs.value
 )
 
+const countdownFinished = computed(() =>
+  props.countdownMeta && props.countdownMeta.target_ts <= nowTs.value
+)
+
 const countdownRemain = computed(() => {
   if (!countdownActive.value) return ''
   const s = props.countdownMeta.target_ts - nowTs.value
@@ -112,6 +116,11 @@ const stopCountdown = () => {
                 </p>
                 <p class="cd-running-hint">由设备固件执行，关闭页面不影响；任务 5 已被倒计时占用</p>
                 <button class="cd-stop" @click="stopCountdown">停止倒计时</button>
+              </div>
+              <div v-else-if="countdownFinished" class="cd-finished">
+                <p class="cd-finished-text">⏰ 倒计时已到执行时间，任务 5 仍处于启用状态</p>
+                <p class="cd-running-hint">设备固件执行一次性任务后不会自动停用，请点击清除以停用任务 5</p>
+                <button class="cd-stop" @click="stopCountdown">清除任务 5</button>
               </div>
               <div v-else class="cd-form">
                 <div class="cd-presets">
@@ -299,6 +308,12 @@ const stopCountdown = () => {
   font-size: 0.85em;
 }
 .cd-stop:hover { background: rgba(229, 57, 53, 0.08); }
+.cd-finished-text {
+  margin: 8px 0 4px;
+  font-size: 0.9em;
+  color: #f57c00;
+  font-weight: 600;
+}
 .cd-presets {
   display: flex;
   align-items: center;

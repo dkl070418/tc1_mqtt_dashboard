@@ -131,9 +131,17 @@ onMounted(async () => {
   window.addEventListener('mqtt-admin-login', handleAdminLogin)
   window.addEventListener('mqtt-admin-logout', handleAdminLogout)
   window.addEventListener('mqtt-admin-devices-updated', handleAdminDevicesUpdated)
+  // 周期拉取状态兜底：连接期间若某条 state 事件被丢弃，1 分钟内自动纠正
+  stateRefreshTimer = setInterval(() => {
+    if (connected.value) {
+      queryAllStates()
+      autoCleanStaleCountdowns()
+    }
+  }, 60000)
 })
 
 onUnmounted(() => {
+  if (stateRefreshTimer) clearInterval(stateRefreshTimer)
   window.removeEventListener('mqtt-admin-login', handleAdminLogin)
   window.removeEventListener('mqtt-admin-logout', handleAdminLogout)
   window.removeEventListener('mqtt-admin-devices-updated', handleAdminDevicesUpdated)
@@ -172,6 +180,8 @@ const connectMqtt = (config) => {
       connectionError.value = ''
       // Subscribe to all tracked devices
       deviceList.value.forEach(entry => subscribeDevice(entry))
+      // 连接/重连后稍等片刻，让状态回读到达，再清理过期的倒计时任务
+      setTimeout(autoCleanStaleCountdowns, 3000)
     })
 
     mqttClient.on('message', (topic, message) => {
@@ -251,11 +261,65 @@ const subscribeDevice = (entry) => {
     const topicState = `device/ztc1/${mac}/state`
     const topicAvail = `device/ztc1/${mac}/availability`
     client.value.subscribe([topicSensor, topicState, topicAvail], (err) => {
-      if (err) console.error(`Failed to subscribe ${mac}`, err)
-      else console.log(`Subscribed to ${mac}`)
+      if (err) {
+        console.error(`Failed to subscribe ${mac}`, err)
+      } else {
+        console.log(`Subscribed to ${mac}`)
+        // 订阅完成后主动拉取一次设备当前完整状态，避免断线重连后错过 state 事件导致状态冻结
+        queryDeviceState(mac)
+      }
     })
   }
 }
+
+// 查询设备当前状态：zControl v1 固件对 setting:{mqtt_uri:null} 会回显完整 state
+const queryDeviceState = (mac) => {
+  if (!client.value || !connected.value) return
+  if (getDeviceVersion(mac) === 'v2') return
+  client.value.publish(`device/ztc1/${mac}/set`, JSON.stringify({ mac, setting: { mqtt_uri: null } }))
+}
+
+const queryAllStates = () => {
+  deviceList.value.forEach(entry => queryDeviceState(typeof entry === 'object' ? entry.mac : entry))
+}
+
+// 清理已到执行时间的一次性倒计时任务：固件执行一次后不会自动停用，
+// 这里主动给设备下发 task_4 on=0，避免任务5一直停留在"启用"状态。
+const autoCleanStaleCountdowns = () => {
+  if (!client.value || !connected.value) return
+  const now = Math.floor(Date.now() / 1000)
+  deviceList.value.forEach((entry) => {
+    const mac = typeof entry === 'object' ? entry.mac : entry
+    let metas = {}
+    try { metas = JSON.parse(localStorage.getItem(`ztc1_countdown_${mac}`) || '{}') } catch (e) { metas = {} }
+    let changed = false
+    Object.keys(metas).forEach((plugIdxStr) => {
+      const plugIndex = parseInt(plugIdxStr, 10)
+      const m = metas[plugIdxStr]
+      if (!m || !m.target_ts || m.target_ts > now) return
+      const task = devices[mac]?.[`plug_${plugIndex}`]?.setting?.task_4
+      const taskData = {
+        hour: task?.hour ?? 0,
+        minute: task?.minute ?? 0,
+        repeat: 0,
+        action: task?.action ?? 1,
+        on: 0
+      }
+      client.value.publish(`device/ztc1/${mac}/set`, JSON.stringify({
+        mac,
+        [`plug_${plugIndex}`]: { setting: { task_4: taskData } }
+      }))
+      delete metas[plugIdxStr]
+      changed = true
+    })
+    if (changed) {
+      localStorage.setItem(`ztc1_countdown_${mac}`, JSON.stringify(metas))
+    }
+  })
+}
+
+// 周期拉取状态兜底：连接期间若某条 state 事件被丢弃，1 分钟内自动纠正
+let stateRefreshTimer = null
 
 // 深合并：对嵌套对象递归合并，避免浅覆盖导致已保存的定时任务丢失
 function isPlainObject(v) {
