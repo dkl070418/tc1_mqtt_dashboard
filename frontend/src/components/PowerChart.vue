@@ -75,7 +75,6 @@ const setRange = (r) => {
   rangeRef.value = r.key
   loadData()
 }
-
 const loadSummary = async () => {
   const token = localStorage.getItem('mqtt_admin_token')
   if (!token) return
@@ -93,15 +92,19 @@ const loadSummary = async () => {
   }
 }
 
-const loadData = async () => {
+// silent=true: 后台自动刷新（功率变化节流触发），不显示"加载中"遮罩，
+// 失败也不弹错误覆盖旧图，避免每 5 秒闪一次干扰视线
+const loadData = async (silent = false) => {
   if (chipBrokenRef.value) return
   const token = localStorage.getItem('mqtt_admin_token')
   if (!token) {
-    errorRef.value = '未登录管理员，无法查看功耗'
+    if (!silent) errorRef.value = '未登录管理员，无法查看功耗'
     return
   }
-  loadingRef.value = true
-  errorRef.value = ''
+  if (!silent) {
+    loadingRef.value = true
+    errorRef.value = ''
+  }
   const myToken = ++currentToken
 
   const range = RANGES.find(r => r.key === rangeRef.value) || RANGES[2]
@@ -115,7 +118,7 @@ const loadData = async () => {
     )
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      errorRef.value = data.error || '加载失败'
+      if (!silent) errorRef.value = data.error || '加载失败'
       return
     }
     const data = await res.json()
@@ -134,16 +137,17 @@ const loadData = async () => {
 
     if (!series || !chart) initChart()
     if (!series || !chart) {
-      errorRef.value = '图表初始化失败'
+      if (!silent) errorRef.value = '图表初始化失败'
       return
     }
     series.setData(points)
     hasDataRef.value = points.length > 0
     chart.timeScale().fitContent()
   } catch (e) {
-    errorRef.value = '网络错误: ' + e.message
+    if (!silent) errorRef.value = '网络错误: ' + e.message
+    else console.warn('功耗数据后台刷新失败', e)
   } finally {
-    if (myToken === currentToken) loadingRef.value = false
+    if (!silent && myToken === currentToken) loadingRef.value = false
   }
 }
 
@@ -201,11 +205,11 @@ watch(() => props.power, (val) => {
     return
   }
   errorRef.value = ''
-  // 节流：功率值频繁变化时，最多每 5 秒重载一次图表数据
+  // 节流：功率值频繁变化时，最多每 5 秒静默重载一次图表数据（不闪"加载中"）
   if (powerDebounceTimer) return
   powerDebounceTimer = setTimeout(() => {
     powerDebounceTimer = null
-    loadData()
+    loadData(true)
   }, 5000)
 })
 </script>
