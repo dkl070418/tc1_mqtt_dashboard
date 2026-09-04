@@ -32,6 +32,11 @@ func listUsers() ([]string, error) {
 		if line == "" {
 			continue
 		}
+		// mosquitto_passwd 的 base64 哈希会折行：不含 ":" 的行是上一条目的
+		// 续行，不是用户名，必须跳过，否则用户列表会出现乱码条目
+		if !strings.Contains(line, ":") {
+			continue
+		}
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) >= 1 && parts[0] != "" {
 			users = append(users, parts[0])

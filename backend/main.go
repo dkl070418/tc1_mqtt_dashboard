@@ -26,10 +26,12 @@ type Config struct {
 	DeviceConfigPath    string     `yaml:"device_config_path"`
 	PowerDBPath         string     `yaml:"power_db_path"`
 	PowerCollectEnabled bool       `yaml:"power_collect_enabled"`
+	PowerMQTTBroker     string     `yaml:"power_mqtt_broker"`
 	ACLPatterns         []string   `yaml:"acl_patterns"`
 	AdminUsername       string     `yaml:"admin_username"`
 	AdminPassword       string     `yaml:"admin_password"`
 	TOTPSecret          string     `yaml:"totp_secret"`
+	SkipTOTPOnIntranet  bool       `yaml:"skip_totp_on_intranet"`
 	RegisterLevel       int        `yaml:"register_level"`
 	GuestPageEnabled    *bool      `yaml:"guest_page_enabled"`
 	ContactInfo         string     `yaml:"contact_info"`
@@ -79,21 +81,24 @@ func persistConfig() error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
-// syncAdminToMQTT 启动时自动将管理员账号同步到mosquitto
+// syncAdminToMQTT 启动时自动将管理员账号同步到 mosquitto。
+// 无论用户是否已存在都执行 mosquitto_passwd -b（对已存在用户为覆盖语义），
+// 这样在 config.yaml 改了 admin_password 后重启即可让 passwd 哈希与配置一致，
+// 避免"Web 登录用新密码成功、但浏览器拿新密码连 MQTT 一直失败"的问题。
 func syncAdminToMQTT() error {
 	if cfg.AdminUsername == "" || cfg.AdminPassword == "" {
 		log.Println("警告: admin_username 或 admin_password 为空，跳过同步")
 		return nil
 	}
 
-	// 检查管理员用户是否已存在
-	if userExists(cfg.AdminUsername) {
-		log.Printf("管理员用户 %s 已存在，跳过创建", cfg.AdminUsername)
-		return nil
+	existed := userExists(cfg.AdminUsername)
+	if existed {
+		log.Printf("正在更新管理员账号 %s 的 MQTT 密码（与 config.yaml 对齐）...", cfg.AdminUsername)
+	} else {
+		log.Printf("正在同步管理员账号 %s 到MQTT服务...", cfg.AdminUsername)
 	}
 
-	// 创建管理员MQTT用户
-	log.Printf("正在同步管理员账号 %s 到MQTT服务...", cfg.AdminUsername)
+	// 创建/更新管理员MQTT用户
 	if err := createMosquittoUser(cfg.AdminUsername, cfg.AdminPassword); err != nil {
 		return err
 	}
@@ -103,7 +108,11 @@ func syncAdminToMQTT() error {
 		return err
 	}
 
-	log.Printf("管理员账号 %s 同步成功", cfg.AdminUsername)
+	if existed {
+		log.Printf("管理员账号 %s 密码已同步", cfg.AdminUsername)
+	} else {
+		log.Printf("管理员账号 %s 同步成功", cfg.AdminUsername)
+	}
 	return nil
 }
 
@@ -125,13 +134,16 @@ func main() {
 	if cfg.PowerDBPath == "" {
 		cfg.PowerDBPath = "/data/metadata/power_stats.db"
 	}
+	if cfg.PowerMQTTBroker == "" {
+		cfg.PowerMQTTBroker = "tcp://mosquitto:1883"
+	}
 	if cfg.PowerCollectEnabled {
 		var err error
 		powerStore, err = NewPowerStore(cfg.PowerDBPath)
 		if err != nil {
 			log.Printf("警告: 初始化功耗存储失败: %v", err)
 		} else {
-			broker := "tcp://mosquitto:1883"
+			broker := cfg.PowerMQTTBroker
 			collector := NewPowerCollector(powerStore)
 			if err := collector.Start(broker, cfg.AdminUsername, cfg.AdminPassword); err != nil {
 				log.Printf("警告: 功耗采集器启动失败: %v", err)

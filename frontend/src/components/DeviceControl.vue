@@ -301,15 +301,41 @@ const getEnabledTaskCount = (plugIndex) => {
 }
 
 // 将定时任务配置同步到后端（跨端一致，任务执行仍由设备固件负责）
+// tasksCache 始终是该设备的完整任务表，用全量替换语义保存，
+// 从任务编辑器里删除的任务才能真正从服务端消失（v1.9.0）
 const persistTasks = () => {
   if (props.saveDeviceConfig) {
     try {
-      props.saveDeviceConfig({ mac: props.device.mac, tasks: { ...tasksCache } })
+      props.saveDeviceConfig({ mac: props.device.mac, tasks: { ...tasksCache }, tasksReplace: true })
         .catch(err => console.warn('保存定时任务到后端失败', err))
     } catch (e) {
       console.warn('保存定时任务到后端失败', e)
     }
   }
+}
+
+// 删除任务：向固件下发 on=0 停用 + 从本地/服务端任务表移除（固件不支持擦除槽位，
+// 停用即等效删除；删除后跨端回显与重连恢复都不会再出现该任务）
+const deleteTask = (plugIndex, taskIndex) => {
+  const taskKey = `task_${taskIndex}`
+  const existing = getTask(plugIndex, taskIndex)
+  if (existing) {
+    emit('send-cmd', {
+      mac: props.device.mac,
+      [`plug_${plugIndex}`]: {
+        setting: { [taskKey]: { ...existing, on: 0 } }
+      }
+    })
+  }
+  if (tasksCache[plugIndex]) {
+    delete tasksCache[plugIndex][taskKey]
+    if (Object.keys(tasksCache[plugIndex]).length === 0) delete tasksCache[plugIndex]
+  }
+  if (taskIndex === 4 && countdownMetas[plugIndex] !== undefined) {
+    delete countdownMetas[plugIndex]
+    persistCountdownMetas()
+  }
+  persistTasks()
 }
 
 const bitToDays = (bits) => {
@@ -511,39 +537,37 @@ const getV2SocketName = (index) => {
 }
 
 // Layout Control
+// persistedLayout = 用户选择并保存到服务端的布局；gridLayout = 实际显示布局
+// （移动端 1x6 一行六列体验差，仅在显示层降级为 auto，不写回服务端，
+//   避免手机访问一次就把桌面端选的 1x6 覆盖掉）
 const isMobile = ref(window.innerWidth < 768)
-const gridLayout = ref('1x6') // 默认 1行6列；移动端自动切换为 auto
+const persistedLayout = ref('1x6')
+const gridLayout = computed(() =>
+  isMobile.value && persistedLayout.value === '1x6' ? 'auto' : persistedLayout.value
+)
 
 const handleResize = () => {
   isMobile.value = window.innerWidth < 768
-  if (isMobile.value && gridLayout.value === '1x6') {
-    gridLayout.value = 'auto'
-  }
 }
 
 onMounted(() => {
   window.addEventListener('resize', handleResize)
   handleResize()
-  // 服务端异步到达后可能覆盖默认布局，但保留移动端自适应
-  if (isMobile.value && gridLayout.value === '1x6') {
-    gridLayout.value = 'auto'
-  }
+  // 组件挂载时服务端配置可能已加载完成（watch 不会触发），补一次初始化
+  if (props.deviceConfig?.layout) persistedLayout.value = props.deviceConfig.layout
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
 })
 
-// 服务端布局异步到达时同步
+// 服务端布局异步到达时同步（只更新持久化值，不触发回写）
 watch(() => props.deviceConfig?.layout, (val) => {
-  if (val && val !== gridLayout.value) gridLayout.value = val
-  if (isMobile.value && gridLayout.value === '1x6') {
-    gridLayout.value = 'auto'
-  }
+  if (val && val !== persistedLayout.value) persistedLayout.value = val
 })
 
-// 布局变化时保存到后端
-watch(gridLayout, (val) => {
+// 用户主动改布局时保存到后端
+watch(persistedLayout, (val) => {
   if (props.saveDeviceConfig) {
     try {
       props.saveDeviceConfig({ mac: props.device.mac, layout: val })
@@ -829,6 +853,7 @@ const taskLogActionText = (entry) => {
       :plug-name="timerPlug >= 0 ? getPlugDisplayName(timerPlug) : ''"
       :get-task="getTask"
       :update-task="updateTask"
+      :delete-task="deleteTask"
       :save-countdown="saveCountdown"
       :stop-countdown="stopCountdown"
       :countdown-meta="countdownMetaForPlug"

@@ -34,6 +34,15 @@ if [ ! -f backend/config.yaml ]; then
   exit 1
 fi
 
+# 默认密码检测：仍是模板 admin123 时醒目告警（注册/管理接口暴露在公网时极危险）
+if grep -qE '^[[:space:]]*admin_password:[[:space:]]*"?admin123"?' backend/config.yaml; then
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "!! 检测到 admin_password 仍为默认值 admin123 !"
+  echo "!! 若本机器暴露在公网/外网可访问，请立即修改 backend/config.yaml"
+  echo "!! 中的 admin_username/admin_password 后重新运行本脚本。"
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+fi
+
 echo "==> 拉取镜像并启动服务 (docker compose pull && up -d)..."
 docker compose pull
 docker compose up -d

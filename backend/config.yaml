@@ -7,6 +7,7 @@ device_metadata_path: "/data/metadata/device_metadata.json" # 控制台设备显
 device_config_path: "/data/metadata/device_config.json"     # 插口名/备注/定时任务配置持久化文件
 power_db_path: "/data/power/power_stats.db"                # 功耗统计数据 SQLite 文件（本地卷，勿放 SMB）
 power_collect_enabled: true                                 # 是否启用功耗采集
+power_mqtt_broker: "tcp://mosquitto:1883"                  # 功耗采集连接的 broker（容器网络内地址，未配置时默认此值）
 
 # ACL模式列表, %s 会被替换为用户的MAC地址(大写和小写各一份)
 acl_patterns:

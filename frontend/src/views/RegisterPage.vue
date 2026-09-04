@@ -188,7 +188,10 @@ const applyQuickConfig = (data) => {
   }
   localStorage.setItem('mqtt_config', JSON.stringify(mqttConfig))
 
-  const normalizedMac = data.mac.replace(/[:-]/g, '').toUpperCase()
+  // 与 App.vue addDevice 保持一致：v1 用小写、v2 用大写
+  // （设备上报/订阅 topic 大小写敏感，混用会导致 v1 设备收不到数据）
+  const macNoSep = data.mac.replace(/[:-]/g, '')
+  const normalizedMac = data.version === 'v2' ? macNoSep.toUpperCase() : macNoSep.toLowerCase()
 
   let devices = []
   try {
@@ -197,7 +200,7 @@ const applyQuickConfig = (data) => {
   } catch (e) {}
 
   const exists = devices.find(d =>
-    d.mac.replace(/[:-]/g, '').toUpperCase() === normalizedMac
+    d.mac.replace(/[:-]/g, '').toLowerCase() === macNoSep.toLowerCase()
   )
   if (!exists) devices.push({ mac: normalizedMac, version: data.version })
   localStorage.setItem('ztc1_devices', JSON.stringify(devices))

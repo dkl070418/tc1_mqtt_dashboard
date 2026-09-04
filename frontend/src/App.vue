@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v1.8.2'
+const APP_VERSION = 'v1.9.0'
 
 const router = useRouter()
 
@@ -178,6 +178,8 @@ const connectMqtt = (config) => {
       connected.value = true
       connectionState.value = 'connected'
       connectionError.value = ''
+      mqttReconnectTS = Date.now() // 记录重连时间，10s 窗口内首条 state 触发恢复
+      recoveredDevices.clear()
       // Subscribe to all tracked devices
       deviceList.value.forEach(entry => subscribeDevice(entry))
       // 连接/重连后稍等片刻，让状态回读到达，再清理过期的倒计时任务
@@ -233,6 +235,7 @@ const disconnectMqtt = () => {
   connected.value = false
   connectionState.value = 'disconnected'
   connectionError.value = ''
+  recoveredDevices.clear() // 断连后重置，下次连接时允许恢复所有设备
 }
 
 const getDeviceVersion = (mac) => {
@@ -300,6 +303,8 @@ const refreshAllStates = () => {
 
 // 清理已到执行时间的一次性倒计时任务：固件执行一次后不会自动停用，
 // 这里主动给设备下发 task_4 on=0，避免任务5一直停留在"启用"状态。
+// 同时把停用结果同步到服务端配置，否则设备重连时 recoverDeviceAfterReconnect
+// 会把服务端仍为 on=1 的 task_4 重新下发，导致过期倒计时被"复活"。
 const autoCleanStaleCountdowns = () => {
   if (!client.value || !connected.value) return
   const now = Math.floor(Date.now() / 1000)
@@ -324,6 +329,13 @@ const autoCleanStaleCountdowns = () => {
         mac,
         [`plug_${plugIndex}`]: { setting: { task_4: taskData } }
       }))
+      // 同步服务端任务配置（管理员模式），防止重连恢复时重新启用
+      const serverTasks = deviceConfigs[mac]?.tasks
+      if (serverTasks?.[plugIdxStr]?.task_4) {
+        serverTasks[plugIdxStr] = { ...serverTasks[plugIdxStr], task_4: { ...serverTasks[plugIdxStr].task_4, on: 0 } }
+        saveDeviceConfig({ mac, tasks: { ...serverTasks }, tasksReplace: true })
+          .catch(err => console.warn('同步倒计时停用状态失败', err))
+      }
       delete metas[plugIdxStr]
       changed = true
     })
@@ -331,6 +343,45 @@ const autoCleanStaleCountdowns = () => {
       localStorage.setItem(`ztc1_countdown_${mac}`, JSON.stringify(metas))
     }
   })
+}
+
+// ---- 设备重连恢复：自动同步时间 + 重新下发定时任务 ----
+const recoveredDevices = new Set() // 本次连接已恢复过的设备，避免重复下发
+let mqttReconnectTS = 0 // MQTT 重连时间戳：10s 窗口内收到的首条 state 触发恢复
+
+const recoverDeviceAfterReconnect = (mac) => {
+  if (!client.value || !connected.value) return
+  if (getDeviceVersion(mac) === 'v2') return // v2 暂不处理
+  if (recoveredDevices.has(mac)) return
+  recoveredDevices.add(mac)
+
+  console.log(`[recovery] 设备 ${mac} 重连，开始恢复时间和任务配置`)
+
+  // 1. 同步设备时间（防时钟漂移导致定时任务触发时间偏移）
+  const unix = Math.floor(Date.now() / 1000)
+  client.value.publish(`device/ztc1/${mac}/set`, JSON.stringify({
+    mac,
+    setting: { time: unix }
+  }))
+
+  // 2. 从服务端保存的配置中恢复定时任务
+  const cfg = deviceConfigs[mac]
+  if (!cfg?.tasks) {
+    console.log(`[recovery] 设备 ${mac} 无保存的任务配置，跳过`)
+    return
+  }
+  const payload = { mac }
+  Object.entries(cfg.tasks).forEach(([plugIdx, tasksMap]) => {
+    Object.entries(tasksMap).forEach(([taskKey, taskData]) => {
+      if (!payload[`plug_${plugIdx}`]) {
+        payload[`plug_${plugIdx}`] = { setting: {} }
+      }
+      payload[`plug_${plugIdx}`].setting[taskKey] = taskData
+    })
+  })
+  // 通过 set topic 下发完整任务配置
+  client.value.publish(`device/ztc1/${mac}/set`, JSON.stringify(payload))
+  console.log(`[recovery] 设备 ${mac} 任务配置已下发`, Object.keys(cfg.tasks))
 }
 
 // 周期拉取状态兜底：连接期间若某条 state 事件被丢弃，1 分钟内自动纠正
@@ -388,12 +439,24 @@ const handleMessage = (topic, payload) => {
   
   if (!mac) return
 
+  // 检测重连触发条件：
+  // 1. 设备之前标记为离线（available === false），现在收到状态数据
+  // 2. MQTT 刚重连（10s 窗口内），该设备首条 state 到达时强制恢复
+  const justReconnected = (Date.now() - mqttReconnectTS) < 10000
+  const shouldRecover = (devices[mac] && devices[mac].available === false) || (justReconnected && !recoveredDevices.has(mac))
+
   if (!devices[mac]) {
     devices[mac] = { mac }
   }
 
   // 深合并状态，保留 device 中已存在的嵌套字段（如各插口的定时任务 setting）
   Object.assign(devices[mac], deepMerge(devices[mac], payload))
+
+  // 设备重新上线：自动同步时间 + 恢复定时任务（延迟 1.5s 等设备就绪）
+  if (shouldRecover && devices[mac].available !== false) {
+    recoveredDevices.delete(mac) // 允许本次恢复
+    setTimeout(() => recoverDeviceAfterReconnect(mac), 1500)
+  }
 }
 
 const handleV2Message = (topic, msgStr) => {
@@ -590,7 +653,7 @@ const loadDeviceConfigs = async () => {
 }
 
 // 保存单台设备配置到后端
-const saveDeviceConfig = async ({ mac, layout, remarks, tasks, version }) => {
+const saveDeviceConfig = async ({ mac, layout, remarks, tasks, tasksReplace, version }) => {
   if (!adminManaged.value) return
   const token = localStorage.getItem('mqtt_admin_token')
   if (!token) throw new Error('管理员登录已失效')
@@ -598,7 +661,10 @@ const saveDeviceConfig = async ({ mac, layout, remarks, tasks, version }) => {
   const payload = {}
   if (layout !== undefined) payload.layout = layout
   if (remarks !== undefined) payload.remarks = remarks
-  if (tasks !== undefined) payload.tasks = tasks
+  if (tasks !== undefined) {
+    payload.tasks = tasks
+    if (tasksReplace) payload.tasks_replace = true
+  }
   if (version !== undefined) payload.version = version
   if (Object.keys(payload).length === 0) return
 
@@ -812,6 +878,7 @@ applyTheme(theme.value)
       <div class="content-area">
         <DeviceControl
           v-if="selectedDeviceState && selectedDeviceHasData"
+          :key="selectedMac"
           :device="selectedDeviceState"
           :save-display-name="saveDeviceDisplayName"
           :device-config="serverDeviceConfig"

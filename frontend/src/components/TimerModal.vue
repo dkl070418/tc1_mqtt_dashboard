@@ -8,6 +8,7 @@ const props = defineProps({
   plugName: String,
   getTask: Function,
   updateTask: Function,
+  deleteTask: { type: Function, default: null },
   saveCountdown: Function,   // (hours, minutes, action) => 保存倒计时(含时间同步)
   stopCountdown: Function,   // 停止当前倒计时
   countdownMeta: Object      // { target_ts, action } | null
@@ -164,7 +165,9 @@ const stopCountdown = () => {
               :task="getTask ? getTask(plugIndex, n) : null"
               :index="n"
               :countdown-active="n === 4 && countdownActive"
+              :deletable="!!(getTask && getTask(plugIndex, n)) && !!deleteTask"
               @save="data => updateTask && updateTask(plugIndex, n, data)"
+              @delete="deleteTask && deleteTask(plugIndex, n)"
             />
           </div>
           <div class="tm-footer">

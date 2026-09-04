@@ -1,8 +1,10 @@
 # ------ 构建阶段（始终在宿主平台运行 Node，无需模拟）------
 FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
+# 国内构建传 --build-arg NPM_REGISTRY=https://registry.npmmirror.com 加速
+ARG NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /app
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm ci --registry=${NPM_REGISTRY}
 COPY frontend/ ./
 RUN npm run build
 

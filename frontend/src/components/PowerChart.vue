@@ -26,6 +26,7 @@ const hasDataRef = ref(false)       // 当前时间段是否有数据
 let chart = null
 let series = null
 let currentToken = 0
+let powerDebounceTimer = null
 
 const RANGES = [
   { key: '1h', label: '1小时', seconds: 3600, granularity: '1min' },
@@ -160,22 +161,25 @@ const updateChipState = (val) => {
     errorRef.value = ''
     nextTick(() => {
       loadData()
-      loadSummary()
     })
   }
 }
 
 watch(() => props.mac, () => {
+  summaryRef.value = null
   updateChipState(props.power)
+  loadSummary()
 })
 
 onMounted(() => {
   updateChipState(props.power)
+  loadSummary()
   window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  if (powerDebounceTimer) { clearTimeout(powerDebounceTimer); powerDebounceTimer = null }
   if (chart) {
     chart.remove()
     chart = null
@@ -190,7 +194,19 @@ const handleResize = () => {
 }
 
 watch(() => props.power, (val) => {
-  updateChipState(val)
+  chipBrokenRef.value = val < 0
+  if (val < 0) {
+    errorRef.value = '该设备疑似功耗芯片损坏，不进行统计'
+    loadingRef.value = false
+    return
+  }
+  errorRef.value = ''
+  // 节流：功率值频繁变化时，最多每 5 秒重载一次图表数据
+  if (powerDebounceTimer) return
+  powerDebounceTimer = setTimeout(() => {
+    powerDebounceTimer = null
+    loadData()
+  }, 5000)
 })
 </script>
 
@@ -225,13 +241,14 @@ watch(() => props.power, (val) => {
       </div>
     </div>
 
-    <div ref="containerRef" class="chart-container" v-show="powerEnabledRef && !chipBrokenRef"></div>
-
-    <div v-if="loadingRef" class="power-loading">加载中...</div>
-    <div v-else-if="powerEnabledRef && !chipBrokenRef && !hasDataRef" class="power-loading">
-      所选时间段暂无功耗数据（设备可能未产生或已过清理周期）
+    <div class="chart-wrapper" v-show="powerEnabledRef && !chipBrokenRef">
+      <div ref="containerRef" class="chart-container"></div>
+      <div v-show="loadingRef" class="chart-overlay">加载中...</div>
+      <div v-show="!loadingRef && !hasDataRef" class="chart-overlay chart-empty">
+        所选时间段暂无功耗数据（设备可能未产生或已过清理周期）
+      </div>
+      <div v-show="errorRef && !chipBrokenRef" class="chart-overlay chart-error">{{ errorRef }}</div>
     </div>
-    <div v-if="errorRef && !chipBrokenRef && powerEnabledRef" class="power-error">{{ errorRef }}</div>
   </div>
 </template>
 
@@ -255,6 +272,7 @@ watch(() => props.power, (val) => {
   display: flex;
   gap: 24px;
   flex-wrap: wrap;
+  min-height: 2.8em;
 }
 .summary-item {
   display: flex;
@@ -288,15 +306,32 @@ watch(() => props.power, (val) => {
   color: #1976d2;
   border-color: #1976d2;
 }
-.chart-container {
+.chart-wrapper {
+  position: relative;
   width: 100%;
   height: 300px;
 }
-.power-loading {
+.chart-container {
+  width: 100%;
+  height: 100%;
+}
+.chart-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
   font-size: 0.9em;
-  text-align: center;
-  padding: 10px;
+  background: var(--bg-card);
+  pointer-events: none;
+}
+.chart-empty {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+.chart-error {
+  color: #f44336;
 }
 .power-error {
   color: #f44336;

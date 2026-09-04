@@ -36,6 +36,14 @@ func handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// 管理员建普通用户同样限制字符集（邮箱用户名允许，因 level=2 用户即邮箱）
+		if !emailRegex.MatchString(req.Username) {
+			if msg := validatePlainUsername(req.Username); msg != "" {
+				jsonError(w, msg, http.StatusBadRequest)
+				return
+			}
+		}
+
 		if !isValidMAC(req.MAC) {
 			jsonError(w, "MAC地址格式不合法", http.StatusBadRequest)
 			return
@@ -223,14 +231,16 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			"register_level":        cfg.RegisterLevel,
 			"guest_page_enabled":    guestPageEnabled(),
 			"totp_enabled":          cfg.TOTPSecret != "",
+			"skip_totp_on_intranet": cfg.SkipTOTPOnIntranet,
 			"contact_info":          cfg.ContactInfo,
 		})
 
 	case http.MethodPut:
 		var req struct {
-			RegisterLevel    *int    `json:"register_level"`
-			GuestPageEnabled *bool   `json:"guest_page_enabled"`
-			ContactInfo      *string `json:"contact_info"`
+			RegisterLevel      *int    `json:"register_level"`
+			GuestPageEnabled   *bool   `json:"guest_page_enabled"`
+			SkipTOTPOnIntranet *bool   `json:"skip_totp_on_intranet"`
+			ContactInfo        *string `json:"contact_info"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonError(w, "请求格式错误", http.StatusBadRequest)
@@ -246,6 +256,9 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.GuestPageEnabled != nil {
 			cfg.GuestPageEnabled = req.GuestPageEnabled
+		}
+		if req.SkipTOTPOnIntranet != nil {
+			cfg.SkipTOTPOnIntranet = *req.SkipTOTPOnIntranet
 		}
 		if req.ContactInfo != nil {
 			cfg.ContactInfo = *req.ContactInfo

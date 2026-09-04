@@ -1,14 +1,51 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// isPrivateIP 判断 IP 是否属于内网（RFC 1918 + loopback）
+func isPrivateIP(ip net.IP) bool {
+	ip = ip.To4()
+	if ip == nil {
+		return false
+	}
+	privateRanges := []struct{ start, end net.IP }{
+		{net.ParseIP("10.0.0.0"), net.ParseIP("10.255.255.255")},
+		{net.ParseIP("172.16.0.0"), net.ParseIP("172.31.255.255")},
+		{net.ParseIP("192.168.0.0"), net.ParseIP("192.168.255.255")},
+		{net.ParseIP("127.0.0.0"), net.ParseIP("127.255.255.255")},
+	}
+	for _, r := range privateRanges {
+		if bytes.Compare(ip, r.start.To4()) >= 0 && bytes.Compare(ip, r.end.To4()) <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// getClientIP 获取客户端真实 IP。
+// 优先使用 nginx 以覆盖方式设置的 X-Real-IP（$remote_addr，不可被客户端伪造）；
+// 不能信任 X-Forwarded-For 首值：nginx 使用 $proxy_add_x_forwarded_for（追加语义），
+// 客户端自带的伪造值会排在最前。
+func getClientIP(r *http.Request) net.IP {
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		if parsed := net.ParseIP(xri); parsed != nil {
+			return parsed
+		}
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return net.ParseIP(host)
+}
 
 type AdminLoginReq struct {
 	Username    string `json:"username"`
@@ -141,9 +178,20 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 两步验证：密钥已配置则必须携带有效动态码（防暴力，见 nginx 限速）
-	if cfg.TOTPSecret != "" && !verifyTOTP(cfg.TOTPSecret, req.TOTPCode) {
-		jsonError(w, "动态验证码错误或已过期", http.StatusUnauthorized)
-		return
+	// 内网跳过：skip_totp_on_intranet=true 且请求来自内网时免验证
+	if cfg.TOTPSecret != "" {
+		skip := false
+		if cfg.SkipTOTPOnIntranet {
+			clientIP := getClientIP(r)
+			skip = isPrivateIP(clientIP)
+			if skip {
+				log.Printf("[AUTH] 内网跳过 2FA: IP=%s", clientIP)
+			}
+		}
+		if !skip && !verifyTOTP(cfg.TOTPSecret, req.TOTPCode) {
+			jsonError(w, "动态验证码错误或已过期", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	resp, err := adminSessionResp(generateToken(req.Username, req.SessionDays))

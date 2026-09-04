@@ -17,6 +17,11 @@
 - 新增 **v1.4.2 配置合并修复**：后端对定时任务按“插口/任务键”合并保存、并对各字段（布局/备注/定时任务）增量更新，修复“刷新后定时任务丢失/只剩最后一个”、“插口备注覆盖定时任务”等问题
 - 新增 **v1.4.3 前端版本号显示**：页面底部显示当前前端版本号，便于确认是否为最新部署
 - 管理员登录期间禁止导入/覆盖配置
+- **v1.9.0 全面代码审查修复版**（无新功能，修复以下问题）：
+  - 安全：`skip_totp_on_intranet` 不再信任可伪造的 X-Forwarded-For 首值（改用 nginx 覆盖式 X-Real-IP）；用户名禁止 `:`/空白字符（防破坏 passwd/ACL 文件解析）
+  - 功耗：修复小时聚合重复累加导致"本月用电"虚高，升级时自动从分钟表重建历史小时数据；采集 broker 地址改为可配置 `power_mqtt_broker`
+  - 配置：管理员改 `admin_password` 后重启自动同步 mosquitto passwd（不再需要手动删用户）；定时任务支持真正删除（`tasks_replace` 全量替换语义 + 任务行删除按钮）
+  - 前端：修复切换设备时定时任务/高级设置缓存串台；倒计时到期停用后不再被设备重连恢复"复活"；移动端访问不再覆盖服务端保存的插口布局；注册页一键添加的 MAC 大小写与主流程一致；管理员面板对 WAF/502 等非 JSON 响应容错
 
 - **注册页** (`/register`)：用户自助注册，填写用户名、密码和设备 MAC 地址，后端自动创建 mosquitto 账户并生成 ACL 规则
 - **管理页** (`/admin`)：管理员登录后可增删改用户、手动编辑 ACL 文件、开关注册功能
@@ -152,7 +157,7 @@ docker compose up -d --build
 | GET/PUT | `/api/admin/acl` | 读取/保存 ACL 文件（需 Token） |
 | GET/PUT | `/api/admin/config` | 查看/修改运行时配置（需 Token） |
 | GET | `/api/admin/device-config` | 获取本账号全部设备的配置（插口名/布局/定时任务）（需 Token） |
-| PUT | `/api/admin/device-config/:mac` | 保存指定设备的配置（需 Token，MAC 须属于本账号） |
+| PUT | `/api/admin/device-config/:mac` | 保存指定设备的配置（需 Token，MAC 须属于本账号；`tasks_replace:true` 时任务全量替换） |
 
 ## 本地开发
 

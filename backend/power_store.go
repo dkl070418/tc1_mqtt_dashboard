@@ -60,6 +60,9 @@ func NewPowerStore(dbPath string) (*PowerStore, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := store.repairHourlyAgg(); err != nil {
+		log.Printf("警告: 重建小时聚合失败: %v", err)
+	}
 	go store.insertLoop()
 	go store.taskLogLoop()
 	go store.aggLoop()
@@ -103,9 +106,52 @@ func (s *PowerStore) initSchema() error {
 		cur_on INTEGER NOT NULL,
 		ts INTEGER NOT NULL
 	);
-	CREATE INDEX IF NOT EXISTS idx_task_logs_mac_ts ON task_logs(mac, ts);`
+	CREATE INDEX IF NOT EXISTS idx_task_logs_mac_ts ON task_logs(mac, ts);
+	CREATE TABLE IF NOT EXISTS store_meta (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);`
 	_, err := s.db.Exec(schema)
 	return err
+}
+
+// repairHourlyAgg 一次性重建 power_agg_1h。
+// 旧版 rollupHourly 用 ON CONFLICT 累加且窗口重叠，导致同一分钟桶被重复计入、
+// 小时能耗/样本数虚高。v1.9.0 起聚合改为幂等重算，这里从 1min 表全量重建一次
+// 被污染的存量数据（通过 store_meta 标记保证只跑一次）。
+func (s *PowerStore) repairHourlyAgg() error {
+	var done string
+	_ = s.db.QueryRow("SELECT value FROM store_meta WHERE key = 'hourly_agg_v2'").Scan(&done)
+	if done == "1" {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM power_agg_1h"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO power_agg_1h(mac, bucket_ts, avg_w, max_w, min_w, energy_kwh, sample_count)
+		SELECT mac, (bucket_ts / 3600) * 3600,
+			AVG(avg_w), MAX(max_w), MIN(min_w),
+			SUM(energy_wh) / 1000.0,
+			SUM(sample_count)
+		FROM power_agg_1min
+		GROUP BY mac, (bucket_ts / 3600) * 3600`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		"INSERT INTO store_meta(key, value) VALUES('hourly_agg_v2', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("小时聚合表已从分钟聚合全量重建（修复旧版重复累加）")
+	return nil
 }
 
 func (s *PowerStore) Insert(sample PowerSample) {
@@ -267,24 +313,21 @@ func (s *PowerStore) aggLoop() {
 	}
 }
 
+// rollupHourly 从分钟聚合重算最近 3 小时的小时聚合。
+// 使用 INSERT OR REPLACE 幂等重算（而非旧版 ON CONFLICT 累加），
+// 同一小时被多次执行结果一致，且迟到/补写的分钟数据能自动并入。
 func (s *PowerStore) rollupHourly() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-		INSERT INTO power_agg_1h(mac, bucket_ts, avg_w, max_w, min_w, energy_kwh, sample_count)
+		INSERT OR REPLACE INTO power_agg_1h(mac, bucket_ts, avg_w, max_w, min_w, energy_kwh, sample_count)
 		SELECT mac, (bucket_ts / 3600) * 3600,
 			AVG(avg_w), MAX(max_w), MIN(min_w),
 			SUM(energy_wh) / 1000.0,
 			SUM(sample_count)
 		FROM power_agg_1min
-		WHERE bucket_ts >= strftime('%s', 'now', '-2 hours')
-		GROUP BY mac, (bucket_ts / 3600) * 3600
-		ON CONFLICT(mac, bucket_ts) DO UPDATE SET
-			avg_w = (avg_w * sample_count + excluded.avg_w * excluded.sample_count) / (sample_count + excluded.sample_count),
-			max_w = MAX(max_w, excluded.max_w),
-			min_w = MIN(min_w, excluded.min_w),
-			energy_kwh = energy_kwh + excluded.energy_kwh,
-			sample_count = sample_count + excluded.sample_count`)
+		WHERE bucket_ts >= strftime('%s', 'now', '-3 hours')
+		GROUP BY mac, (bucket_ts / 3600) * 3600`)
 	if err != nil {
 		log.Printf("小时聚合失败: %v", err)
 	}

@@ -4,10 +4,11 @@ import { reactive, watch, ref } from 'vue'
 const props = defineProps({
   task: Object,
   index: Number,
-  countdownActive: Boolean  // 该槽位正被倒计时占用（仅任务5）
+  countdownActive: Boolean,  // 该槽位正被倒计时占用（仅任务5）
+  deletable: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['save'])
+const emit = defineEmits(['save', 'delete'])
 
 const editing = ref(false)
 const localTask = reactive({
@@ -80,6 +81,13 @@ const toggleOn = () => {
   }
 }
 
+// 删除任务：停用固件槽位并从配置中移除
+const confirmDelete = () => {
+  if (confirm(`确定删除任务 ${props.index + 1} 吗？\n\n将停用设备对应槽位并从配置中移除。`)) {
+    emit('delete')
+  }
+}
+
 </script>
 
 <template>
@@ -97,6 +105,12 @@ const toggleOn = () => {
         </template>
         <span v-else class="ts-empty">（未启用）</span>
         <span class="ts-spacer"></span>
+        <button
+          v-if="deletable"
+          class="ts-del"
+          title="删除此任务"
+          @click.stop="confirmDelete"
+        >🗑</button>
         <button
           class="ts-switch"
           :class="{ on: task?.on === 1 }"
@@ -199,6 +213,16 @@ const toggleOn = () => {
   transition: background 0.2s, border-color 0.2s;
   flex: none;
 }
+.ts-del {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.95em;
+  padding: 2px 4px;
+  opacity: 0.55;
+  flex: none;
+}
+.ts-del:hover { opacity: 1; }
 .ts-switch::after {
   content: '';
   position: absolute;

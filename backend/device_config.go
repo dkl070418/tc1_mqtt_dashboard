@@ -16,12 +16,13 @@ import (
 //   - Remarks: 插口备注/名称（v1 与 v2 的本地命名）
 //   - Layout:  插口布局（auto/1x6/2x3/3x2）
 //   - Tasks:   各插口定时任务配置（期望配置，用于跨端回显）
+//
 // 与设备实时上报的状态分离，避免被设备 state 覆盖。
 type DeviceConfig struct {
-	Layout  string                       `json:"layout,omitempty"`
-	Remarks map[string]string            `json:"remarks,omitempty"`
-	Tasks   map[string]map[string]any    `json:"tasks,omitempty"`
-	Version string                       `json:"version,omitempty"`
+	Layout  string                    `json:"layout,omitempty"`
+	Remarks map[string]string         `json:"remarks,omitempty"`
+	Tasks   map[string]map[string]any `json:"tasks,omitempty"`
+	Version string                    `json:"version,omitempty"`
 }
 
 type deviceConfigStore map[string]map[string]DeviceConfig
@@ -30,12 +31,21 @@ type UpdateDeviceConfigReq struct {
 	Layout  string                    `json:"layout,omitempty"`
 	Remarks map[string]string         `json:"remarks,omitempty"`
 	Tasks   map[string]map[string]any `json:"tasks,omitempty"`
-	Version string                    `json:"version,omitempty"`
+	// TasksReplace=true 时 tasks 按全量替换保存（前端提交完整任务表，
+	// 未包含的任务视为删除）；默认 false 保持旧版"按插口/任务键合并"语义
+	TasksReplace bool   `json:"tasks_replace,omitempty"`
+	Version      string `json:"version,omitempty"`
 }
 
 var (
 	deviceConfigMu      sync.RWMutex
 	deviceConfigPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
+)
+
+// putAdminDeviceConfig 的业务错误，handler 据此映射 HTTP 状态码
+var (
+	errDeviceMACFormat = errors.New("设备 MAC 格式错误")
+	errDeviceForbidden = errors.New("无权修改该设备")
 )
 
 func readDeviceConfigStore() (deviceConfigStore, error) {
@@ -107,7 +117,7 @@ func getAdminDeviceConfig() (map[string]DeviceConfig, error) {
 func putAdminDeviceConfig(mac string, cfg_in UpdateDeviceConfigReq) error {
 	mac = normalizeDeviceMAC(mac)
 	if !deviceConfigPattern.MatchString(mac) {
-		return fmt.Errorf("设备 MAC 格式错误")
+		return errDeviceMACFormat
 	}
 
 	allowedMACs, err := getUserDeviceMACs(cfg.AdminUsername)
@@ -122,7 +132,7 @@ func putAdminDeviceConfig(mac string, cfg_in UpdateDeviceConfigReq) error {
 		}
 	}
 	if !allowed {
-		return fmt.Errorf("无权修改该设备")
+		return errDeviceForbidden
 	}
 
 	deviceConfigMu.Lock()
@@ -155,16 +165,21 @@ func putAdminDeviceConfig(mac string, cfg_in UpdateDeviceConfigReq) error {
 		next.Remarks = deepCopyStringMap(cfg_in.Remarks)
 	}
 	if cfg_in.Tasks != nil {
-		// 按任务键合并，避免前端某次只提交不完整 tasks 时覆盖/丢失其他任务
-		if next.Tasks == nil {
-			next.Tasks = make(map[string]map[string]any)
-		}
-		for plugIdx, tasksMap := range cfg_in.Tasks {
-			if next.Tasks[plugIdx] == nil {
-				next.Tasks[plugIdx] = make(map[string]any)
+		if cfg_in.TasksReplace {
+			// 全量替换：前端提交完整任务表，未包含者视为删除（解决"任务无法删除"）
+			next.Tasks = deepCopyTasks(cfg_in.Tasks)
+		} else {
+			// 兼容旧版：按任务键合并，避免前端某次只提交不完整 tasks 时覆盖/丢失其他任务
+			if next.Tasks == nil {
+				next.Tasks = make(map[string]map[string]any)
 			}
-			for taskKey, taskData := range tasksMap {
-				next.Tasks[plugIdx][taskKey] = taskData
+			for plugIdx, tasksMap := range cfg_in.Tasks {
+				if next.Tasks[plugIdx] == nil {
+					next.Tasks[plugIdx] = make(map[string]any)
+				}
+				for taskKey, taskData := range tasksMap {
+					next.Tasks[plugIdx][taskKey] = taskData
+				}
 			}
 		}
 	}
@@ -198,7 +213,14 @@ func handleAdminPutDeviceConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := putAdminDeviceConfig(mac, req); err != nil {
-		jsonError(w, err.Error(), http.StatusForbidden)
+		switch {
+		case errors.Is(err, errDeviceForbidden):
+			jsonError(w, err.Error(), http.StatusForbidden)
+		case errors.Is(err, errDeviceMACFormat):
+			jsonError(w, err.Error(), http.StatusBadRequest)
+		default:
+			jsonError(w, "保存设备配置失败", http.StatusInternalServerError)
+		}
 		return
 	}
 	jsonResp(w, map[string]string{"status": "ok"})

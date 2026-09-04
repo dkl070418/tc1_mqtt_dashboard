@@ -61,6 +61,7 @@ const addMacLoading = ref(false)
 // Config edit
 const configEditLevel = ref(null)
 const configEditGuest = ref(true)
+const configEditSkipTotp = ref(false)
 const configEditContact = ref('')
 const configSaveMsg = ref('')
 const configSaveMsgType = ref('')
@@ -98,7 +99,14 @@ const apiFetch = async (url, opts = {}) => {
     ...opts,
     headers: { 'Content-Type': 'application/json', ...authHeader(), ...(opts.headers || {}) }
   })
-  const data = await res.json()
+  // WAF 拦截页 / 网关 502 等场景返回的不是 JSON，直接 res.json() 会抛异常
+  // 导致调用方卡在"加载中"，这里统一容错
+  let data = {}
+  try {
+    data = await res.json()
+  } catch (e) {
+    data = res.ok ? {} : { error: `请求失败 (HTTP ${res.status})` }
+  }
   if (res.status === 401) {
     clearAdminSession()
   }
@@ -221,6 +229,7 @@ const loadConfig = async () => {
     configData.value = data
     configEditLevel.value = data.register_level ?? 1
     configEditGuest.value = data.guest_page_enabled !== false
+    configEditSkipTotp.value = data.skip_totp_on_intranet === true
     configEditContact.value = data.contact_info || ''
   }
 }
@@ -322,12 +331,14 @@ const saveConfig = async () => {
     body: JSON.stringify({
       register_level: level,
       guest_page_enabled: configEditGuest.value,
+      skip_totp_on_intranet: configEditSkipTotp.value,
       contact_info: configEditContact.value
     })
   })
   if (ok) {
     configData.value.register_level = level
     configData.value.guest_page_enabled = configEditGuest.value
+    configData.value.skip_totp_on_intranet = configEditSkipTotp.value
     configData.value.contact_info = configEditContact.value
     configSaveMsg.value = '已保存'
     configSaveMsgType.value = 'success'
@@ -617,6 +628,15 @@ onMounted(async () => {
                 <button class="del-btn-inline" @click="totpDisableModal = true; totpDisableCode = ''; totpMsg = ''">关闭</button>
               </template>
               <button v-else class="edit-btn" @click="openTotpSetup">启用两步验证</button>
+            </span>
+          </div>
+          <div class="config-item" v-if="totpEnabled">
+            <span class="config-label">内网跳过验证</span>
+            <span class="config-value">
+              <select v-model="configEditSkipTotp" class="config-select">
+                <option :value="true">开启 — 内网登录免输入动态码</option>
+                <option :value="false">关闭 — 所有登录均需动态码</option>
+              </select>
             </span>
           </div>
           <div class="config-item">

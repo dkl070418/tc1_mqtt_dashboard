@@ -13,6 +13,22 @@ import (
 var macRegex = regexp.MustCompile(`^([0-9A-Fa-f]{12}|([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})$`)
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
+// usernameRegex 普通（非邮箱）用户名字符集白名单。
+// 用户名会写入 mosquitto passwd（user:hash 冒号分隔）与 ACL（"user <name>" 行按空白分词），
+// 因此必须禁止冒号、空白及文件/命令行特殊字符，避免破坏文件解析或参数注入。
+var usernameRegex = regexp.MustCompile(`^[A-Za-z0-9._@\-]+$`)
+
+// validatePlainUsername 校验非邮箱用户名，返回可直接下发的错误信息（空表示通过）
+func validatePlainUsername(name string) string {
+	if len(name) < 3 || len(name) > 32 {
+		return "用户名长度需在3-32个字符之间"
+	}
+	if !usernameRegex.MatchString(name) {
+		return "用户名只能包含字母、数字和 . _ @ - 字符"
+	}
+	return ""
+}
+
 type RegisterReq struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -41,12 +57,12 @@ func handleRegisterStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, map[string]interface{}{
-		"register_level":      cfg.RegisterLevel,
-		"contact_info":        cfg.ContactInfo,
-		"mqtt_uri":            cfg.MQTTUri,
-		"mqtt_ws_uri":         cfg.MQTTWSUri,
-		"guest_page_enabled":  guestPageEnabled(),
-		"totp_enabled":        cfg.TOTPSecret != "",
+		"register_level":     cfg.RegisterLevel,
+		"contact_info":       cfg.ContactInfo,
+		"mqtt_uri":           cfg.MQTTUri,
+		"mqtt_ws_uri":        cfg.MQTTWSUri,
+		"guest_page_enabled": guestPageEnabled(),
+		"totp_enabled":       cfg.TOTPSecret != "",
 	})
 }
 
@@ -144,8 +160,8 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if len(req.Username) < 3 || len(req.Username) > 32 {
-			jsonError(w, "用户名长度需在3-32个字符之间", http.StatusBadRequest)
+		if msg := validatePlainUsername(req.Username); msg != "" {
+			jsonError(w, msg, http.StatusBadRequest)
 			return
 		}
 	}
