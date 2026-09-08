@@ -122,8 +122,8 @@ const confirmDelete = () => {
 
     <div v-else class="edit-form">
       <div class="time-picker">
-        <input type="number" v-model="localTask.hour" min="0" max="23"> :
-        <input type="number" v-model="localTask.minute" min="0" max="59">
+        <input type="number" v-model.number="localTask.hour" min="0" max="23"> :
+        <input type="number" v-model.number="localTask.minute" min="0" max="59">
       </div>
 
       <div class="days-picker">

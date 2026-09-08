@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v1.9.7'
+const APP_VERSION = 'v1.9.8'
 
 const router = useRouter()
 
@@ -402,9 +402,34 @@ const autoCleanStaleCountdowns = () => {
 const recoveredDevices = new Set() // 本次连接已恢复过的设备，避免重复下发
 let mqttReconnectTS = 0 // MQTT 重连时间戳：10s 窗口内收到的首条 state 触发恢复
 
+// 恢复开关：默认开启；排查时可 localStorage.setItem('ztc1_recovery_disabled','1') 关闭
+const recoveryEnabled = () => localStorage.getItem('ztc1_recovery_disabled') !== '1'
+
+// 任务值类型清洗：TaskEditor 的 v-model 未带 .number 时 hour/minute 会是字符串,
+// 原版 v1 固件对非数字类型的解析/比较不健壮, 统一转数字; 其余字段原样透传
+const sanitizeTaskData = (taskData) => {
+  if (!taskData || typeof taskData !== 'object') return taskData
+  const out = { ...taskData }
+  for (const k of ['hour', 'minute', 'repeat', 'action', 'on']) {
+    if (k in out && typeof out[k] !== 'number') {
+      const n = Number(out[k])
+      out[k] = Number.isFinite(n) ? n : out[k]
+    }
+  }
+  return out
+}
+
+// 恢复任务下发节奏：逐插口拆包, 每条间隔 150ms 错峰。
+// v1 原版固件 MQTT 接收缓冲有限, 任务多时整包可超 2KB —— 超限消息被截断,
+// 疑似触发原版固件看门狗复位(朋友端"每刷新一次排插重启一次", 他配了大量任务)。
+// 拆包后单条与 TimerModal 手动保存同构(<300B), 且单条超限只损失一个插口。
 const recoverDeviceAfterReconnect = (mac) => {
   if (!client.value || !connected.value) return
   if (getDeviceVersion(mac) === 'v2') return // v2 暂不处理
+  if (!recoveryEnabled()) {
+    console.log('[recovery] 已通过 ztc1_recovery_disabled 关闭, 跳过')
+    return
+  }
   if (recoveredDevices.has(mac)) return
   recoveredDevices.add(mac)
 
@@ -417,24 +442,31 @@ const recoverDeviceAfterReconnect = (mac) => {
     setting: { time: unix }
   }))
 
-  // 2. 从服务端保存的配置中恢复定时任务
+  // 2. 从服务端保存的配置中恢复定时任务（逐插口拆包错峰下发）
   const cfg = deviceConfigs[mac]
   if (!cfg?.tasks) {
     console.log(`[recovery] 设备 ${mac} 无保存的任务配置，跳过`)
     return
   }
-  const payload = { mac }
-  Object.entries(cfg.tasks).forEach(([plugIdx, tasksMap]) => {
+  const plugEntries = Object.entries(cfg.tasks)
+  let delay = 300 // 等 time 消息先走
+  plugEntries.forEach(([plugIdx, tasksMap]) => {
+    const plugPayload = { mac, [`plug_${plugIdx}`]: { setting: {} } }
+    const setting = plugPayload[`plug_${plugIdx}`].setting
     Object.entries(tasksMap).forEach(([taskKey, taskData]) => {
-      if (!payload[`plug_${plugIdx}`]) {
-        payload[`plug_${plugIdx}`] = { setting: {} }
-      }
-      payload[`plug_${plugIdx}`].setting[taskKey] = taskData
+      setting[taskKey] = sanitizeTaskData(taskData)
     })
+    const body = JSON.stringify(plugPayload)
+    setTimeout(() => {
+      if (!client.value || !connected.value) return
+      client.value.publish(`device/ztc1/${mac}/set`, body)
+      console.log(`[recovery] 下发 ${mac} 插口${plugIdx} 任务(${body.length}B)`)
+    }, delay)
+    delay += 150
   })
-  // 通过 set topic 下发完整任务配置
-  client.value.publish(`device/ztc1/${mac}/set`, JSON.stringify(payload))
-  console.log(`[recovery] 设备 ${mac} 任务配置已下发`, Object.keys(cfg.tasks))
+  if (plugEntries.length) {
+    console.log(`[recovery] 设备 ${mac} 任务配置已排队: ${plugEntries.length} 个插口, 共 ${delay}ms 发完`)
+  }
 }
 
 // 周期拉取状态兜底：连接期间若某条 state 事件被丢弃，1 分钟内自动纠正
