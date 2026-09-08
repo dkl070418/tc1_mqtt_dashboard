@@ -55,6 +55,7 @@ const editMsg = ref('')
 const addMacModal = ref(false)
 const addMacTarget = ref('')
 const addMacValue = ref('')
+const addMacFirmware = ref('v1')
 const addMacMsg = ref('')
 const addMacLoading = ref(false)
 
@@ -407,6 +408,7 @@ const confirmTotpDisable = async () => {
 const openAddMacModal = (username) => {
   addMacTarget.value = username
   addMacValue.value = ''
+  addMacFirmware.value = 'v1'
   addMacMsg.value = ''
   addMacModal.value = true
 }
@@ -427,6 +429,14 @@ const submitAddMac = async () => {
   if (ok) {
     addMacModal.value = false
     await Promise.all([loadAll(), refreshSession()])
+    // 追加到管理员自己账号时, 把固件版本持久化到服务端 device-config, 保证跨端一致
+    if (addMacFirmware.value === 'v2' && addMacTarget.value === adminMqttUsername.value) {
+      const norm = mac.replace(/[:-]/g, '').toLowerCase()
+      await apiFetch(`/api/admin/device-config/${encodeURIComponent(norm)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ firmware: 'v2' })
+      })
+    }
   } else {
     addMacMsg.value = data.error || '添加失败'
   }
@@ -682,6 +692,16 @@ onMounted(async () => {
         <div class="form-group">
           <label>MAC 地址</label>
           <input v-model="addMacValue" placeholder="D0BAE4618631 或 AA:BB:CC:DD:EE:FF" @keyup.enter="submitAddMac" />
+        </div>
+        <div class="form-group">
+          <label>排插固件版本</label>
+          <div class="firmware-options">
+            <button type="button" :class="{ active: addMacFirmware === 'v1' }" @click="addMacFirmware = 'v1'">V1 固件</button>
+            <button type="button" :class="{ active: addMacFirmware === 'v2' }" @click="addMacFirmware = 'v2'">V2 固件</button>
+          </div>
+          <p v-if="addMacTarget !== adminMqttUsername" class="hint">
+            追加到他人账号：固件版本由该用户在自己控制台添加/切换时设置，此处不影响。
+          </p>
         </div>
         <div v-if="addMacMsg" class="msg error">{{ addMacMsg }}</div>
         <div class="modal-actions">
@@ -1032,6 +1052,25 @@ h2, h3 {
   font-size: 0.85em;
   color: var(--text-muted);
   margin-bottom: 8px;
+}
+.firmware-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.firmware-options button {
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.firmware-options button.active {
+  border-color: #2196f3;
+  background: var(--bg-active);
+  color: var(--text-heading);
+  font-weight: 600;
 }
 .hint code {
   background: var(--bg-secondary);

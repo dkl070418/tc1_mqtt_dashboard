@@ -20,6 +20,10 @@ const props = defineProps({
     type: Function,
     default: null
   },
+  changeFirmware: {
+    type: Function,
+    default: null
+  },
   fetchTaskLogs: {
     type: Function,
     default: null
@@ -29,6 +33,28 @@ const props = defineProps({
 const emit = defineEmits(['send-cmd', 'update-remark'])
 
 const isV2 = computed(() => props.device.version === 'v2')
+
+// 管理员可切换固件版本(v1/v2), 服务端持久化
+const firmwareSaving = ref(false)
+const canChangeFirmware = computed(() =>
+  props.device.adminManaged && typeof props.changeFirmware === 'function'
+)
+// 是否已收到该设备的任何上报数据(用于"无数据"提示)
+const hasDeviceData = computed(() =>
+  Object.keys(props.device).some(k => !['mac', 'version', 'displayName', 'adminManaged'].includes(k))
+)
+const applyFirmware = async (ver) => {
+  if (ver === props.device.version || firmwareSaving.value) return
+  if (!confirm(`确定将该设备固件版本改为 ${ver.toUpperCase()} 吗？\n\n将按 ${ver} 的 topic 方案重新订阅。`)) return
+  firmwareSaving.value = true
+  try {
+    await props.changeFirmware(props.device.mac, ver)
+  } catch (e) {
+    alert(e?.message || '切换固件版本失败')
+  } finally {
+    firmwareSaving.value = false
+  }
+}
 
 // Helper to check if plug exists
 const getPlug = (index) => props.device[`plug_${index}`]
@@ -665,6 +691,13 @@ const taskLogActionText = (entry) => {
             <button @click="saveDeviceName" class="icon-btn">✓</button>
           </template>
         </span>
+        <span v-if="canChangeFirmware" class="firmware-switch" title="管理员可切换设备固件版本(跨端持久化)">
+          <button :class="{ active: device.version === 'v1' }" :disabled="firmwareSaving" @click="applyFirmware('v1')">V1</button>
+          <button :class="{ active: device.version === 'v2' }" :disabled="firmwareSaving" @click="applyFirmware('v2')">V2</button>
+        </span>
+      </div>
+      <div v-if="!hasDeviceData" class="no-data-hint">
+        ⏳ 尚未收到该设备的任何数据。若长时间无数据，请确认设备在线，或用右上角 V1/V2 切换固件版本（版本标错会导致订阅不到数据）。
       </div>
       <div class="stats-row">
         <div class="stat">
@@ -698,7 +731,7 @@ const taskLogActionText = (entry) => {
         
         <div class="stat-controls">
             <div class="layout-selector">
-                <select v-model="gridLayout" title="插口布局">
+                <select v-model="persistedLayout" title="插口布局">
                     <option value="auto">自动布局</option>
                     <option value="1x6">1行 (6列)</option>
                     <option value="2x3">2行 (3列)</option>
@@ -1016,6 +1049,37 @@ const taskLogActionText = (entry) => {
     color: #1976d2;
     margin-left: 6px;
     vertical-align: middle;
+}
+.firmware-switch {
+    margin-left: 10px;
+    display: inline-flex;
+    gap: 2px;
+    vertical-align: middle;
+}
+.firmware-switch button {
+    font-size: 0.72em;
+    padding: 1px 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.firmware-switch button:first-child { border-radius: 10px 0 0 10px; }
+.firmware-switch button:last-child { border-radius: 0 10px 10px 0; }
+.firmware-switch button.active {
+    background: #1976d2;
+    border-color: #1976d2;
+    color: #fff;
+}
+.firmware-switch button:disabled { opacity: 0.6; cursor: wait; }
+.no-data-hint {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border-left: 3px solid #ff9800;
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    margin-bottom: 12px;
 }
 .stat label {
   font-size: 0.8em;

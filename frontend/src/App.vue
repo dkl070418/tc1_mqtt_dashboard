@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v1.9.1'
+const APP_VERSION = 'v1.9.6'
 
 const router = useRouter()
 
@@ -239,40 +239,93 @@ const disconnectMqtt = () => {
 }
 
 const getDeviceVersion = (mac) => {
+  // 管理员模式：服务端持久化的固件版本优先（跨浏览器/内外网一致，见 handoff 教训#3）
+  if (adminManaged.value) {
+    const fw = deviceConfigs[mac]?.firmware
+    if (fw === 'v1' || fw === 'v2') return fw
+  }
   const entry = deviceList.value.find(d => d.mac === mac)
   return entry?.version || 'v1'
 }
 
+// 切换设备固件版本：保存到服务端 + 更新本地 + 按新 topic 方案重新订阅
+const changeDeviceFirmware = async (mac, version) => {
+  if (version !== 'v1' && version !== 'v2') return
+  const norm = mac.replace(/[:-]/g, '').toLowerCase()
+  const oldVersion = getDeviceVersion(norm)
+  if (oldVersion === version) return
+  // 先更新本地即时生效
+  if (!deviceConfigs[norm]) deviceConfigs[norm] = {}
+  deviceConfigs[norm].firmware = version
+  const entry = deviceList.value.find(d => d.mac === norm || d.mac.toLowerCase() === norm)
+  if (entry) entry.version = version
+  localStorage.setItem(STORAGE_ADMIN_DEVICES, JSON.stringify(deviceList.value))
+  // 重新订阅: 退订旧 topic, 订阅新 topic
+  if (client.value && connected.value) {
+    unsubscribeDevice({ mac: norm, version: oldVersion })
+    subscribeDevice({ mac: norm, version })
+    if (version === 'v1') queryDeviceState(norm)
+  }
+  // 持久化到服务端
+  try {
+    await saveDeviceConfig({ mac: norm, firmware: version })
+  } catch (e) {
+    console.warn('保存固件版本失败', e)
+    throw e
+  }
+}
+
+// 按固件版本返回该设备应订阅的全部 topic（v1: device/ztc1/...; v2: homeassistant/...）
+// v2 设备实际发布的是【大写 MAC】topic(抓包实测 homeassistant/switch/D0BAE4637BE5/...),
+// 而管理员设备列表存的 mac 是 ACL 里的小写 —— MQTT topic 大小写敏感,
+// 因此 v2 对大小写两种变体都订阅, 保证两种存储形态都能收到
+const topicsForDevice = (mac, version) => {
+  if (version === 'v2') {
+    const upper = mac.toUpperCase()
+    const lower = mac.toLowerCase()
+    const variants = upper === lower ? [upper] : [upper, lower]
+    const out = []
+    for (const m of variants) {
+      out.push(
+        `homeassistant/switch/${m}/+/state`,
+        `homeassistant/switch/${m}/+/config`,
+        `homeassistant/sensor/${m}/+/state`,
+        `homeassistant/sensor/${m}/+/config`,
+        `homeassistant/button/${m}/+/config`,
+      )
+    }
+    return out
+  }
+  return [
+    `device/ztc1/${mac}/sensor`,
+    `device/ztc1/${mac}/state`,
+    `device/ztc1/${mac}/availability`,
+  ]
+}
+
+const unsubscribeDevice = (entry) => {
+  if (!client.value) return
+  const { mac, version } = typeof entry === 'object' ? entry : { mac: entry, version: getDeviceVersion(entry) }
+  client.value.unsubscribe(topicsForDevice(mac, version), (err) => {
+    if (err) console.error(`Failed to unsubscribe ${mac}`, err)
+  })
+}
+
 const subscribeDevice = (entry) => {
   if (!client.value || !connected.value) return
-  const { mac, version } = typeof entry === 'object' ? entry : { mac: entry, version: getDeviceVersion(entry) }
-  
-  if (version === 'v2') {
-    const topics = [
-      `homeassistant/switch/${mac}/+/state`,
-      `homeassistant/switch/${mac}/+/config`,
-      `homeassistant/sensor/${mac}/+/state`,
-      `homeassistant/sensor/${mac}/+/config`,
-      `homeassistant/button/${mac}/+/config`,
-    ]
-    client.value.subscribe(topics, (err) => {
-      if (err) console.error(`Failed to subscribe v2 ${mac}`, err)
-      else console.log(`Subscribed to v2 ${mac}`)
-    })
-  } else {
-    const topicSensor = `device/ztc1/${mac}/sensor`
-    const topicState = `device/ztc1/${mac}/state`
-    const topicAvail = `device/ztc1/${mac}/availability`
-    client.value.subscribe([topicSensor, topicState, topicAvail], (err) => {
-      if (err) {
-        console.error(`Failed to subscribe ${mac}`, err)
-      } else {
-        console.log(`Subscribed to ${mac}`)
-        // 订阅完成后主动拉取一次设备当前完整状态，避免断线重连后错过 state 事件导致状态冻结
-        queryDeviceState(mac)
-      }
-    })
-  }
+  const mac = typeof entry === 'object' ? entry.mac : entry
+  // 服务端固件优先(getDeviceVersion 内含本地回退)
+  const version = getDeviceVersion(mac)
+  const isV2 = version === 'v2'
+  client.value.subscribe(topicsForDevice(mac, version), (err) => {
+    if (err) {
+      console.error(`Failed to subscribe ${mac}`, err)
+    } else {
+      console.log(`Subscribed to ${mac} (${version})`)
+      // v1: 订阅完成后主动拉取一次完整状态，避免断线重连后错过 state 事件导致状态冻结
+      if (!isV2) queryDeviceState(mac)
+    }
+  })
 }
 
 // 查询设备当前状态：zControl v1 固件对 setting:{mqtt_uri:null} 会回显完整 state
@@ -462,9 +515,14 @@ const handleMessage = (topic, payload) => {
 const handleV2Message = (topic, msgStr) => {
   const parts = topic.split('/')
   if (parts.length < 5) return
-  
-  const [, type, mac, entity, suffix] = parts
-  
+
+  const [, type, rawMac, entity, suffix] = parts
+  // v2 设备发布的是大写 MAC topic, 而设备列表(ACL来源)存的是小写 ——
+  // 归一化回列表里的 mac, 否则状态会写进一个大小写不同的"幽灵设备"
+  const norm = rawMac.toLowerCase()
+  const known = deviceList.value.find(d => d.mac.toLowerCase() === norm)
+  const mac = known ? known.mac : rawMac
+
   if (!devices[mac]) {
     devices[mac] = { mac, version: 'v2' }
   }
@@ -550,22 +608,7 @@ const removeDevice = (mac) => {
   const idx = deviceList.value.findIndex(d => d.mac === mac)
   const entry = idx > -1 ? deviceList.value[idx] : null
   if (entry && client.value && connected.value) {
-    const topics = entry.version === 'v2'
-      ? [
-          `homeassistant/switch/${mac}/+/state`,
-          `homeassistant/switch/${mac}/+/config`,
-          `homeassistant/sensor/${mac}/+/state`,
-          `homeassistant/sensor/${mac}/+/config`,
-          `homeassistant/button/${mac}/+/config`,
-        ]
-      : [
-          `device/ztc1/${mac}/sensor`,
-          `device/ztc1/${mac}/state`,
-          `device/ztc1/${mac}/availability`,
-        ]
-    client.value.unsubscribe(topics, (err) => {
-      if (err) console.error(`Failed to unsubscribe ${mac}`, err)
-    })
+    unsubscribeDevice(entry)
   }
   if (idx > -1) {
     deviceList.value.splice(idx, 1)
@@ -597,17 +640,19 @@ const selectDevice = (mac) => {
 
 const sendCommand = (cmd) => {
     if (!client.value || !connected.value) return
-    const mac = cmd.mac
-    const topic = `device/ztc1/${mac}/set`
+    let mac = cmd.mac
     const version = getDeviceVersion(mac)
-    
+    // v2 固件(源码 user_mqtt_client.c L173/385/796)只订阅固定 topic `device/ztc1/set`,
+    // 命令文本里的 MAC 用大写(固件 %02X 生成 str_mac, strcmp 大小写敏感校验)
+    const setTopic = version === 'v2' ? 'device/ztc1/set' : `device/ztc1/${mac}/set`
     if (version === 'v2' && cmd.payload) {
-      console.log('Sending v2', topic, cmd.payload)
-      client.value.publish(topic, cmd.payload)
+      const payload = cmd.payload.replaceAll(mac, mac.toUpperCase())
+      console.log('Sending v2', setTopic, payload)
+      client.value.publish(setTopic, payload)
     } else {
       const payload = JSON.stringify({ ...cmd, mac })
-      console.log('Sending', topic, payload)
-      client.value.publish(topic, payload)
+      console.log('Sending', setTopic, payload)
+      client.value.publish(setTopic, payload)
     }
 }
 
@@ -647,13 +692,23 @@ const loadDeviceConfigs = async () => {
     Object.entries(data || {}).forEach(([mac, cfg]) => {
       deviceConfigs[mac.toLowerCase()] = cfg || {}
     })
+    // 按服务端固件回填本地设备列表版本，保证徽章/订阅与持久化配置一致
+    let listChanged = false
+    deviceList.value.forEach((entry) => {
+      const fw = deviceConfigs[entry.mac.toLowerCase()]?.firmware
+      if ((fw === 'v1' || fw === 'v2') && entry.version !== fw) {
+        entry.version = fw
+        listChanged = true
+      }
+    })
+    if (listChanged) localStorage.setItem(STORAGE_ADMIN_DEVICES, JSON.stringify(deviceList.value))
   } catch (e) {
     console.warn('加载设备配置失败', e)
   }
 }
 
 // 保存单台设备配置到后端
-const saveDeviceConfig = async ({ mac, layout, remarks, tasks, tasksReplace, version }) => {
+const saveDeviceConfig = async ({ mac, layout, remarks, tasks, tasksReplace, firmware, version }) => {
   if (!adminManaged.value) return
   const token = localStorage.getItem('mqtt_admin_token')
   if (!token) throw new Error('管理员登录已失效')
@@ -665,6 +720,7 @@ const saveDeviceConfig = async ({ mac, layout, remarks, tasks, tasksReplace, ver
     payload.tasks = tasks
     if (tasksReplace) payload.tasks_replace = true
   }
+  if (firmware !== undefined) payload.firmware = firmware
   if (version !== undefined) payload.version = version
   if (Object.keys(payload).length === 0) return
 
@@ -684,6 +740,7 @@ const saveDeviceConfig = async ({ mac, layout, remarks, tasks, tasksReplace, ver
   if (payload.layout !== undefined) deviceConfigs[norm].layout = payload.layout
   if (payload.remarks !== undefined) deviceConfigs[norm].remarks = payload.remarks
   if (payload.tasks !== undefined) deviceConfigs[norm].tasks = payload.tasks
+  if (payload.firmware !== undefined) deviceConfigs[norm].firmware = payload.firmware
   if (payload.version !== undefined) deviceConfigs[norm].version = payload.version
 }
 
@@ -876,21 +933,21 @@ applyTheme(theme.value)
       </div>
 
       <div class="content-area">
+        <!-- 选中即渲染(不再要求已有数据): 没数据时固件切换仍可用,
+             否则"固件标错->订阅不到数据->面板不渲染->无法改固件"会死锁 -->
         <DeviceControl
-          v-if="selectedDeviceState && selectedDeviceHasData"
+          v-if="selectedDeviceState"
           :key="selectedMac"
           :device="selectedDeviceState"
           :save-display-name="saveDeviceDisplayName"
           :device-config="serverDeviceConfig"
           :save-device-config="saveDeviceConfig"
+          :change-firmware="changeDeviceFirmware"
           :fetch-task-logs="fetchTaskLogs"
           @send-cmd="sendCommand"
         />
         <div v-else-if="deviceList.length === 0" class="empty-state">
           MQTT 已连接，请先添加设备
-        </div>
-        <div v-else-if="selectedDeviceState" class="empty-state">
-          等待设备数据
         </div>
         <div v-else class="empty-state">
           请选择设备

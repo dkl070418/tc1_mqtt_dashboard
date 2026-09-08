@@ -72,6 +72,13 @@ func macExists(mac string) bool {
 	return strings.Contains(content, clean)
 }
 
+// v2SetTopicRule v2 固件(zTC1)通过固定 topic `device/ztc1/set` 接收控制命令
+// (固件源码 user_mqtt_client.c 只订阅该 topic, HA 对接的 cmd_t 亦是它),
+// 用户 ACL 必须放行, 否则浏览器/HA 的发布会被 mosquitto **静默丢弃**(QoS1 也回 PUBACK)。
+// 注意: 该 topic 为全体 v2 设备共享, 授权后任意用户理论上可向其发布带任意 MAC 的命令,
+// 属 v2 固件协议固有限制(HA 直连同样如此)。
+const v2SetTopicRule = "topic readwrite device/ztc1/set"
+
 // 添加ACL规则
 // mac 已由 normalizeMAC 标准化为 AA:BB:CC:DD:EE:FF 格式
 func addACLRules(username, mac string) error {
@@ -98,6 +105,8 @@ func addACLRules(username, mac string) error {
 			}
 		}
 	}
+	// v2 固件的固定命令 topic(见 v2SetTopicRule 注释)
+	rules.WriteString(v2SetTopicRule + "\n")
 
 	f, err := os.OpenFile(cfg.ACLPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -377,7 +386,7 @@ func appendACLRules(username, mac string) error {
 
 	lines := strings.Split(string(data), "\n")
 
-	// 生成待插入的 topic 规则（已按 MAC 变体去重）
+	// 生成待插入的 topic 规则（已按 MAC 变体去重），并确保 v2 固件的固定命令 topic 在列
 	var newTopics []string
 	for _, topic := range strings.Split(rules.String(), "\n") {
 		topic = strings.TrimSpace(topic)
@@ -385,6 +394,7 @@ func appendACLRules(username, mac string) error {
 			newTopics = append(newTopics, topic)
 		}
 	}
+	newTopics = append(newTopics, v2SetTopicRule)
 
 	// 查找该用户最后一个块
 	userLine := fmt.Sprintf("user %s", username)

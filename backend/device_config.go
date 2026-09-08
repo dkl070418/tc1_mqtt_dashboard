@@ -22,7 +22,9 @@ type DeviceConfig struct {
 	Layout  string                    `json:"layout,omitempty"`
 	Remarks map[string]string         `json:"remarks,omitempty"`
 	Tasks   map[string]map[string]any `json:"tasks,omitempty"`
-	Version string                    `json:"version,omitempty"`
+	// Firmware: 设备固件版本 "v1" | "v2"，决定 topic 订阅方案，跨端持久化
+	Firmware string `json:"firmware,omitempty"`
+	Version  string `json:"version,omitempty"`
 }
 
 type deviceConfigStore map[string]map[string]DeviceConfig
@@ -34,6 +36,7 @@ type UpdateDeviceConfigReq struct {
 	// TasksReplace=true 时 tasks 按全量替换保存（前端提交完整任务表，
 	// 未包含的任务视为删除）；默认 false 保持旧版"按插口/任务键合并"语义
 	TasksReplace bool   `json:"tasks_replace,omitempty"`
+	Firmware     string `json:"firmware,omitempty"`
 	Version      string `json:"version,omitempty"`
 }
 
@@ -46,6 +49,7 @@ var (
 var (
 	errDeviceMACFormat = errors.New("设备 MAC 格式错误")
 	errDeviceForbidden = errors.New("无权修改该设备")
+	errDeviceFirmware  = errors.New("固件版本只能是 v1 或 v2")
 )
 
 func readDeviceConfigStore() (deviceConfigStore, error) {
@@ -149,16 +153,23 @@ func putAdminDeviceConfig(mac string, cfg_in UpdateDeviceConfigReq) error {
 
 	// 先深拷贝现有配置作为基底，避免本次请求未提交的字段被丢
 	next := DeviceConfig{
-		Layout:  existing.Layout,
-		Remarks: deepCopyStringMap(existing.Remarks),
-		Tasks:   deepCopyTasks(existing.Tasks),
-		Version: existing.Version,
+		Layout:   existing.Layout,
+		Remarks:  deepCopyStringMap(existing.Remarks),
+		Tasks:    deepCopyTasks(existing.Tasks),
+		Firmware: existing.Firmware,
+		Version:  existing.Version,
 	}
 	if cfg_in.Version != "" {
 		next.Version = cfg_in.Version
 	}
 	if cfg_in.Layout != "" {
 		next.Layout = cfg_in.Layout
+	}
+	if cfg_in.Firmware != "" {
+		if cfg_in.Firmware != "v1" && cfg_in.Firmware != "v2" {
+			return errDeviceFirmware
+		}
+		next.Firmware = cfg_in.Firmware
 	}
 	if cfg_in.Remarks != nil {
 		// 插口备注每次全量提交，直接替换
@@ -217,6 +228,8 @@ func handleAdminPutDeviceConfig(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errDeviceForbidden):
 			jsonError(w, err.Error(), http.StatusForbidden)
 		case errors.Is(err, errDeviceMACFormat):
+			jsonError(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, errDeviceFirmware):
 			jsonError(w, err.Error(), http.StatusBadRequest)
 		default:
 			jsonError(w, "保存设备配置失败", http.StatusInternalServerError)
