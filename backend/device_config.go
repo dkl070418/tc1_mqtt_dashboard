@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -117,6 +118,38 @@ func getAdminDeviceConfig() (map[string]DeviceConfig, error) {
 	return store[cfg.AdminUsername], nil
 }
 
+// sanitizeTaskValues 任务值类型清洗: 前端(旧版)可能以字符串保存 hour/minute 等,
+// 原版 v1 固件对非数字不健壮; v2 调度器/固件也需要数字。写入前统一归一。
+func sanitizeTaskValues(tasks map[string]map[string]any) map[string]map[string]any {
+	if tasks == nil {
+		return nil
+	}
+	for plugIdx, tasksMap := range tasks {
+		for taskKey, raw := range tasksMap {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, k := range []string{"hour", "minute", "repeat", "action", "on"} {
+				if v, exists := m[k]; exists {
+					switch n := v.(type) {
+					case float64:
+						// JSON 数字已是 float64, 归一为整数值
+						m[k] = float64(int64(n))
+					case string:
+						if f, err := strconv.ParseFloat(strings.TrimSpace(n), 64); err == nil {
+							m[k] = f
+						}
+					}
+				}
+			}
+			tasksMap[taskKey] = m
+		}
+		tasks[plugIdx] = tasksMap
+	}
+	return tasks
+}
+
 // putAdminDeviceConfig 保存当前管理员账号下某台设备的配置
 func putAdminDeviceConfig(mac string, cfg_in UpdateDeviceConfigReq) error {
 	mac = normalizeDeviceMAC(mac)
@@ -178,7 +211,7 @@ func putAdminDeviceConfig(mac string, cfg_in UpdateDeviceConfigReq) error {
 	if cfg_in.Tasks != nil {
 		if cfg_in.TasksReplace {
 			// 全量替换：前端提交完整任务表，未包含者视为删除（解决"任务无法删除"）
-			next.Tasks = deepCopyTasks(cfg_in.Tasks)
+			next.Tasks = sanitizeTaskValues(deepCopyTasks(cfg_in.Tasks))
 		} else {
 			// 兼容旧版：按任务键合并，避免前端某次只提交不完整 tasks 时覆盖/丢失其他任务
 			if next.Tasks == nil {
@@ -192,6 +225,7 @@ func putAdminDeviceConfig(mac string, cfg_in UpdateDeviceConfigReq) error {
 					next.Tasks[plugIdx][taskKey] = taskData
 				}
 			}
+			next.Tasks = sanitizeTaskValues(next.Tasks)
 		}
 	}
 

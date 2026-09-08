@@ -110,9 +110,69 @@ func (s *PowerStore) initSchema() error {
 	CREATE TABLE IF NOT EXISTS store_meta (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS scheduler_fires (
+		mac TEXT NOT NULL,
+		plug_idx INTEGER NOT NULL,
+		task_key TEXT NOT NULL,
+		fire_minute TEXT NOT NULL,
+		fired_at INTEGER NOT NULL,
+		PRIMARY KEY (mac, plug_idx, task_key, fire_minute)
 	);`
 	_, err := s.db.Exec(schema)
 	return err
+}
+
+// HasSchedulerFire 判定某任务在某一分钟是否已触发过(调度器防重复)
+func (s *PowerStore) HasSchedulerFire(mac string, plugIdx int, taskKey, fireMinute string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRow(
+		"SELECT COUNT(1) FROM scheduler_fires WHERE mac=? AND plug_idx=? AND task_key=? AND fire_minute=?",
+		mac, plugIdx, taskKey, fireMinute).Scan(&n)
+	if err != nil {
+		log.Printf("[scheduler] 查询触发记录失败: %v", err)
+		return false // 查询失败按未触发处理, 宁可重发(设备端幂等)也不漏发
+	}
+	return n > 0
+}
+
+// MarkSchedulerFire 记录一次触发(INSERT OR IGNORE, 同一主键自然去重)
+func (s *PowerStore) MarkSchedulerFire(mac string, plugIdx int, taskKey, fireMinute string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		"INSERT OR IGNORE INTO scheduler_fires(mac, plug_idx, task_key, fire_minute, fired_at) VALUES(?,?,?,?,?)",
+		mac, plugIdx, taskKey, fireMinute, time.Now().Unix())
+	if err != nil {
+		log.Printf("[scheduler] 记录触发失败: %v", err)
+	}
+}
+
+// RecentSchedulerFires 调试用: 最近触发记录
+func (s *PowerStore) RecentSchedulerFires(limit int) ([]map[string]any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		"SELECT mac, plug_idx, task_key, fire_minute, fired_at FROM scheduler_fires ORDER BY fired_at DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var mac, taskKey, fireMinute string
+		var plugIdx, firedAt int64
+		if err := rows.Scan(&mac, &plugIdx, &taskKey, &fireMinute, &firedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"mac": mac, "plug_idx": plugIdx, "task_key": taskKey,
+			"fire_minute": fireMinute, "fired_at": firedAt,
+		})
+	}
+	return out, rows.Err()
 }
 
 // repairHourlyAgg 一次性重建 power_agg_1h。
@@ -381,6 +441,12 @@ func (s *PowerStore) cleanup() {
 	}
 	if n, _ := result3.RowsAffected(); n > 0 {
 		log.Printf("清理了 %d 条 15 天前的任务执行日志", n)
+	}
+
+	// 调度器触发记录：保留 7 天
+	schedCutoff := time.Now().AddDate(0, 0, -7).Unix()
+	if _, err := s.db.Exec("DELETE FROM scheduler_fires WHERE fired_at < ?", schedCutoff); err != nil {
+		log.Printf("清理调度记录失败: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ const props = defineProps({
   show: Boolean,
   plugIndex: Number,
   plugName: String,
+  isV2: { type: Boolean, default: false },
   getTask: Function,
   updateTask: Function,
   deleteTask: { type: Function, default: null },
@@ -68,6 +69,13 @@ const countdownActionText = computed(() =>
   props.countdownMeta?.action === 1 ? '开启' : '关闭'
 )
 
+// 执行方提示: v1 由设备固件执行; v2 固件无定时命令路径, 由后端调度器代为执行
+const countdownHint = computed(() =>
+  props.isV2
+    ? '保存后由服务器定时调度器执行（V2 固件无定时命令路径），一次性任务，直接覆盖任务 5'
+    : '保存后自动同步设备时间，到点由设备固件执行（一次性任务，直接覆盖任务 5）'
+)
+
 const saveCountdown = async () => {
   cdError.value = ''
   const h = Number(cdHours.value) || 0
@@ -115,7 +123,7 @@ const stopCountdown = () => {
                 <p class="cd-running-text">
                   倒计时进行中，将在 <strong>{{ countdownRemain }}</strong> 后<strong>{{ countdownActionText }}</strong>此插口
                 </p>
-                <p class="cd-running-hint">由设备固件执行，关闭页面不影响；任务 5 已被倒计时占用</p>
+                <p v-if="countdownActive" class="cd-running-hint">{{ isV2 ? '由服务器定时调度器执行，关闭页面不影响；任务 5 已被倒计时占用' : '由设备固件执行，关闭页面不影响；任务 5 已被倒计时占用' }}</p>
                 <button class="cd-stop" @click="stopCountdown">停止倒计时</button>
               </div>
               <div v-else-if="countdownFinished" class="cd-finished">
@@ -151,7 +159,7 @@ const stopCountdown = () => {
                     </select>
                   </label>
                 </div>
-                <p class="cd-hint">保存后自动同步设备时间，到点由设备固件执行（一次性任务，直接覆盖任务 5）</p>
+                <p class="cd-hint">{{ countdownHint }}</p>
                 <p v-if="cdError" class="cd-error">{{ cdError }}</p>
                 <button class="cd-save" :disabled="cdSaving" @click="saveCountdown">
                   {{ cdSaving ? '保存中...' : '启动倒计时' }}

@@ -148,6 +148,11 @@ func main() {
 			if err := collector.Start(broker, cfg.AdminUsername, cfg.AdminPassword); err != nil {
 				log.Printf("警告: 功耗采集器启动失败: %v", err)
 			}
+			// V2 设备定时任务调度器(方案A): 与功耗存储共用 fires 表, 独立 MQTT 连接
+			scheduler := NewTaskScheduler(powerStore)
+			if err := scheduler.Start(broker, cfg.AdminUsername, cfg.AdminPassword); err != nil {
+				log.Printf("警告: 定时调度器启动失败: %v", err)
+			}
 		}
 	}
 

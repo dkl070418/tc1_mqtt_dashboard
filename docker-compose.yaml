@@ -12,7 +12,7 @@ services:
       - ./mosquitto/log:/mosquitto/log
 
   backend:
-    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-backend:v1.9.8
+    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-backend:v2.0.0
     container_name: mqtt-mgr-backend
     restart: unless-stopped
     volumes:
@@ -31,7 +31,7 @@ services:
       - mosquitto
 
   nginx:
-    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-nginx:v1.9.8
+    image: crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-nginx:v2.0.0
     container_name: mqtt-mgr-nginx
     restart: unless-stopped
     ports:

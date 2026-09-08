@@ -219,17 +219,19 @@ const closeTimer = () => {
 }
 
 const updateTask = (plugIndex, taskIndex, taskData) => {
-  // taskData should contain hour, minute, repeat, action, on
-  // Build the command
-  const cmd = {
-    mac: props.device.mac,
-    [`plug_${plugIndex}`]: {
-      setting: {
-        [`task_${taskIndex}`]: taskData
+  // v1: 下发固件执行; v2: 固件无定时命令路径, 由后端调度器读配置代为执行,
+  // 这里只更新本地缓存并同步服务端(调度器 15s 内拾取)
+  if (!isV2.value) {
+    const cmd = {
+      mac: props.device.mac,
+      [`plug_${plugIndex}`]: {
+        setting: {
+          [`task_${taskIndex}`]: taskData
+        }
       }
     }
+    emit('send-cmd', cmd)
   }
-  emit('send-cmd', cmd)
 
   // 更新本地缓存并同步到后端
   if (!tasksCache[plugIndex]) tasksCache[plugIndex] = {}
@@ -268,11 +270,13 @@ const saveCountdown = async (hours, minutes, action) => {
   const plugIndex = timerPlug.value
   if (plugIndex < 0) return
 
-  // 1. 同步设备时间（v1 固件时钟漂移会直接影响触发精度）
-  emit('send-cmd', {
-    mac: props.device.mac,
-    setting: { time: Math.floor(Date.now() / 1000) }
-  })
+  // 1. 同步设备时间（v1 固件时钟漂移会直接影响触发精度; v2 由后端调度器执行, 无需）
+  if (!isV2.value) {
+    emit('send-cmd', {
+      mac: props.device.mac,
+      setting: { time: Math.floor(Date.now() / 1000) }
+    })
+  }
 
   // 2. 计算目标时刻并写入 task_4（一次性任务，直接覆盖）
   const target = new Date(Date.now() + (hours * 3600 + minutes * 60) * 1000)
@@ -340,12 +344,12 @@ const persistTasks = () => {
   }
 }
 
-// 删除任务：向固件下发 on=0 停用 + 从本地/服务端任务表移除（固件不支持擦除槽位，
-// 停用即等效删除；删除后跨端回显与重连恢复都不会再出现该任务）
+// 删除任务：v1 下发 on=0 停用 + 从配置移除; v2 固件无任务命令路径, 仅改配置
+// (停用即等效删除；删除后跨端回显、重连恢复与后端调度器都不会再出现该任务)
 const deleteTask = (plugIndex, taskIndex) => {
   const taskKey = `task_${taskIndex}`
   const existing = getTask(plugIndex, taskIndex)
-  if (existing) {
+  if (existing && !isV2.value) {
     emit('send-cmd', {
       mac: props.device.mac,
       [`plug_${plugIndex}`]: {
@@ -826,13 +830,19 @@ const taskLogActionText = (entry) => {
           >
         </div>
         <div class="plug-body">
-          <button 
-            class="switch-btn" 
+          <button
+            class="switch-btn"
             :class="{ active: getV2SocketState(i-1) === 1 }"
             @click="togglePlug(i-1)"
           >
             {{ getV2SocketState(i-1) === 1 ? 'ON' : 'OFF' }}
           </button>
+
+          <div class="plug-actions">
+            <button class="text-btn" @click="openTimer(i-1)">
+              定时<span v-if="getEnabledTaskCount(i-1) > 0" class="task-badge">{{ getEnabledTaskCount(i-1) }}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -884,6 +894,7 @@ const taskLogActionText = (entry) => {
       :show="timerPlug !== -1"
       :plug-index="timerPlug"
       :plug-name="timerPlug >= 0 ? getPlugDisplayName(timerPlug) : ''"
+      :is-v2="isV2"
       :get-task="getTask"
       :update-task="updateTask"
       :delete-task="deleteTask"
