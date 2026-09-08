@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v1.9.6'
+const APP_VERSION = 'v1.9.7'
 
 const router = useRouter()
 
@@ -555,12 +555,54 @@ const handleV2Message = (topic, msgStr) => {
   }
 }
 
-const parseV2SwitchState = (mac, msgStr) => {
+// v2 命令回执表: key=`${mac}|${entity}|${state}` -> {timer, retries}
+// 固件状态回显为 QoS0+retained, 总开关突发 7 条时 WiFi 上可能丢包,
+// 且设备仅在状态变化时发布 => 丢一条 retained 就永久错误(实测发生过)。
+// 对策: 用户命令先乐观更新 UI, 2.5s 内没等到设备对应回显则重发(幂等,
+// 重发还会触发固件重发全量状态, 顺带修复 broker 里的错误 retained)。
+const v2PendingAcks = new Map()
+
+const v2AckKeyOf = (payload) => {
+  const parts = payload.trim().split(' ')
+  if (parts[0] !== 'set' || parts.length < 4) return null
+  let entity, state
+  if (parts[1] === 'socket' && parts.length >= 5) {
+    entity = `socket_${parseInt(parts[3])}`
+    state = parseInt(parts[4])
+  } else {
+    entity = parts[1]
+    state = parseInt(parts[3])
+  }
+  return `${parts[2].toUpperCase()}|${entity}|${state}`
+}
+
+const clearV2Ack = (key) => {
+  const p = v2PendingAcks.get(key)
+  if (p) { clearTimeout(p.timer); v2PendingAcks.delete(key) }
+}
+
+const armV2Ack = (mac, payload, retries = 0) => {
+  const key = v2AckKeyOf(payload)
+  if (!key) return
+  clearV2Ack(key)
+  const timer = setTimeout(() => {
+    if (!v2PendingAcks.has(key)) return
+    v2PendingAcks.delete(key)
+    if (retries < 2 && client.value && connected.value) {
+      console.warn(`[v2ack] ${key} 回显超时, 重发第${retries + 1}次`)
+      client.value.publish('device/ztc1/set', payload)
+      armV2Ack(mac, payload, retries + 1)
+    }
+  }, 2500)
+  v2PendingAcks.set(key, { timer, retries })
+}
+
+const parseV2SwitchState = (mac, msgStr, fromEcho = true) => {
   const parts = msgStr.trim().split(' ')
   if (parts[0] !== 'set' || parts.length < 4) return
-  
+
   const entity = parts[1]
-  
+
   if (entity === 'socket' && parts.length >= 5) {
     const socketIndex = parseInt(parts[3])
     const state = parseInt(parts[4])
@@ -568,6 +610,16 @@ const parseV2SwitchState = (mac, msgStr) => {
   } else if (parts.length >= 4) {
     const state = parseInt(parts[3])
     devices[mac][entity] = state
+    // 总开关即全路意图: 本地同步 6 路(乐观或回显一致)
+    if (entity === 'total_socket') {
+      for (let i = 0; i < 6; i++) devices[mac][`socket_${i}`] = state
+    }
+  }
+
+  // 设备回显到达 => 对应回执完成(乐观更新不标记, 留给超时重发机制)
+  if (fromEcho) {
+    const key = v2AckKeyOf(msgStr)
+    if (key) clearV2Ack(key)
   }
 }
 
@@ -647,6 +699,11 @@ const sendCommand = (cmd) => {
     const setTopic = version === 'v2' ? 'device/ztc1/set' : `device/ztc1/${mac}/set`
     if (version === 'v2' && cmd.payload) {
       const payload = cmd.payload.replaceAll(mac, mac.toUpperCase())
+      // QoS0 突发易丢包且无自愈: 命令即意图, 先乐观更新 UI,
+      // 2.5s 未收到设备回显则自动重发(幂等, 且触发固件重发全量状态)
+      if (!devices[mac]) devices[mac] = { mac }
+      parseV2SwitchState(mac, payload, false)
+      armV2Ack(mac, payload)
       console.log('Sending v2', setTopic, payload)
       client.value.publish(setTopic, payload)
     } else {
