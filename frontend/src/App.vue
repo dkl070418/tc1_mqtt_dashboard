@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v2.0.0'
+const APP_VERSION = 'v2.0.1'
 
 const router = useRouter()
 
@@ -593,6 +593,12 @@ const handleV2Message = (topic, msgStr) => {
 // 对策: 用户命令先乐观更新 UI, 2.5s 内没等到设备对应回显则重发(幂等,
 // 重发还会触发固件重发全量状态, 顺带修复 broker 里的错误 retained)。
 const v2PendingAcks = new Map()
+// 用户最近触碰过的单路插口 (mac|idx -> ts): total 回显禁止覆盖 8s 内的改动
+const v2SocketTouch = {}
+let v2SendSeq = 0 // v2 命令序号: 重发守卫(有更新命令时丢弃旧重发, 防止旧意图覆写新意图)
+
+const touchV2Socket = (mac, idx) => { v2SocketTouch[`${mac}|${idx}`] = Date.now() }
+const isV2SocketTouched = (mac, idx) => Date.now() - (v2SocketTouch[`${mac}|${idx}`] || 0) < 8000
 
 const v2AckKeyOf = (payload) => {
   const parts = payload.trim().split(' ')
@@ -613,17 +619,22 @@ const clearV2Ack = (key) => {
   if (p) { clearTimeout(p.timer); v2PendingAcks.delete(key) }
 }
 
-const armV2Ack = (mac, payload, retries = 0) => {
+const armV2Ack = (mac, payload, seq, retries = 0) => {
   const key = v2AckKeyOf(payload)
   if (!key) return
   clearV2Ack(key)
   const timer = setTimeout(() => {
     if (!v2PendingAcks.has(key)) return
     v2PendingAcks.delete(key)
+    if (seq !== v2SendSeq) {
+      // 已有更新的命令: 重发旧命令会以旧意图覆写新意图(实测 bug), 丢弃
+      console.log(`[v2ack] ${key} 回显超时, 但已有更新命令, 跳过重发`)
+      return
+    }
     if (retries < 2 && client.value && connected.value) {
       console.warn(`[v2ack] ${key} 回显超时, 重发第${retries + 1}次`)
       client.value.publish('device/ztc1/set', payload)
-      armV2Ack(mac, payload, retries + 1)
+      armV2Ack(mac, payload, seq, retries + 1)
     }
   }, 2500)
   v2PendingAcks.set(key, { timer, retries })
@@ -642,9 +653,15 @@ const parseV2SwitchState = (mac, msgStr, fromEcho = true) => {
   } else if (parts.length >= 4) {
     const state = parseInt(parts[3])
     devices[mac][entity] = state
-    // 总开关即全路意图: 本地同步 6 路(乐观或回显一致)
-    if (entity === 'total_socket') {
-      for (let i = 0; i < 6; i++) devices[mac][`socket_${i}`] = state
+    // 仅当"用户主动操作总开关"的乐观更新时联动 6 路。
+    // 回显/重发到达的 total 严禁直接覆写单路: 否则 total 的 ack 重发会把
+    // 用户刚做的单路修改踩掉(实测 bug: 点插口5关, 滞后的 total=1 回显
+    // 触发全路覆写, UI 又变回全开, 看起来"控制不了")。
+    // 8s 内被用户动过的单路保持用户意图, 其余路以 total 状态同步。
+    if (entity === 'total_socket' && !fromEcho) {
+      for (let i = 0; i < 6; i++) {
+        if (!isV2SocketTouched(mac, i)) devices[mac][`socket_${i}`] = state
+      }
     }
   }
 
@@ -735,7 +752,12 @@ const sendCommand = (cmd) => {
       // 2.5s 未收到设备回显则自动重发(幂等, 且触发固件重发全量状态)
       if (!devices[mac]) devices[mac] = { mac }
       parseV2SwitchState(mac, payload, false)
-      armV2Ack(mac, payload)
+      const parts = payload.trim().split(' ')
+      if (parts[1] === 'socket' && parts.length >= 5) {
+        touchV2Socket(mac, parseInt(parts[3]))
+      }
+      const seq = ++v2SendSeq
+      armV2Ack(mac, payload, seq)
       console.log('Sending v2', setTopic, payload)
       client.value.publish(setTopic, payload)
     } else {
