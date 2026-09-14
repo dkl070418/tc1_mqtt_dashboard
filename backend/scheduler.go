@@ -178,17 +178,21 @@ func (s *TaskScheduler) tick() {
 		if s.store.HasSchedulerFire(t.mac, t.plugIdx, t.taskKey, fireMinute) {
 			continue // 本分钟已触发过(含重启后的重复 tick)
 		}
-		s.store.MarkSchedulerFire(t.mac, t.plugIdx, t.taskKey, fireMinute)
 
 		payload := fmt.Sprintf("set socket %s %d %d", strings.ToUpper(t.mac), t.plugIdx, t.action)
+		// 先发布成功再记 fire：失败不落库，本分钟后续 tick(约15s)可重试
 		token := s.client.Publish("device/ztc1/set", 0, false, payload)
-		go func(ts taskSpec, p string) {
-			if !token.WaitTimeout(5*time.Second) || token.Error() != nil {
-				log.Printf("[scheduler] 下发失败 %s 插口%d %s: %v", ts.mac, ts.plugIdx, ts.taskKey, token.Error())
-				return
+		ok := token.WaitTimeout(5*time.Second) && token.Error() == nil
+		if !ok {
+			errMsg := "timeout"
+			if token.Error() != nil {
+				errMsg = token.Error().Error()
 			}
-			log.Printf("[scheduler] 已触发: %s 插口%d 任务%s -> %s", ts.mac, ts.plugIdx, ts.taskKey, p)
-		}(t, payload)
+			log.Printf("[scheduler] 下发失败(本分钟将重试) %s 插口%d %s: %s", t.mac, t.plugIdx, t.taskKey, errMsg)
+			continue
+		}
+		s.store.MarkSchedulerFire(t.mac, t.plugIdx, t.taskKey, fireMinute)
+		log.Printf("[scheduler] 已触发: %s 插口%d 任务%s -> %s", t.mac, t.plugIdx, t.taskKey, payload)
 	}
 }
 

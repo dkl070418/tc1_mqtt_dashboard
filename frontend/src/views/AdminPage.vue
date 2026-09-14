@@ -12,7 +12,11 @@ const loginForm = ref({ username: '', password: '', totp_code: '', session_days:
 const loginError = ref('')
 const loginLoading = ref(false)
 const totpEnabled = ref(false)      // 服务端两步验证开关（register/status 下发）
-const showTotpField = ref(false)    // 登录报错提示需要验证码时强制显示
+// 2FA 登录弹窗（需要验证码时遮罩弹出，不再在表单里常驻输入框）
+const totpLoginModal = ref(false)
+const totpLoginDigits = ref(['', '', '', '', '', ''])
+const totpLoginMsg = ref('')
+const totpLoginLoading = ref(false)
 
 // TOTP 绑定/关闭弹窗
 const totpModal = ref(false)
@@ -64,6 +68,17 @@ const configEditLevel = ref(null)
 const configEditGuest = ref(true)
 const configEditSkipTotp = ref(false)
 const configEditContact = ref('')
+const configEditWebhookEnabled = ref(false)
+const configEditWebhookURL = ref('')
+const configEditWebhookHeaders = ref('')
+const configEditWebhookBody = ref('')
+const configEditWebhookRetry = ref(1)
+const configEditWebhookThrottle = ref(2)
+const webhookTesting = ref(false)
+const webhookTestMsg = ref('')
+const webhookTestMsgType = ref('')
+const webhookSaveMsg = ref('')
+const webhookSaveMsgType = ref('')
 const configSaveMsg = ref('')
 const configSaveMsgType = ref('')
 
@@ -164,7 +179,7 @@ const saveAdminDevices = (serverDevices) => {
   return devices
 }
 
-const login = async () => {
+const login = async (totpCode = '') => {
   loginError.value = ''
   loginLoading.value = true
   try {
@@ -174,27 +189,72 @@ const login = async () => {
       body: JSON.stringify({
         username: loginForm.value.username,
         password: loginForm.value.password,
-        totp_code: loginForm.value.totp_code.trim(),
+        totp_code: totpCode.trim(),
         session_days: loginForm.value.session_days
       })
     })
     const data = await res.json()
     if (res.ok) {
+      totpLoginModal.value = false
       saveAdminSession(data)
       window.dispatchEvent(new CustomEvent('mqtt-admin-login'))
       await loadAll()
-      // 管理员登录成功 → 直接进入 MQTT 控制台
       router.push('/')
     } else {
-      loginError.value = data.error || '登录失败'
-      // 后端要求动态验证码但表单还没显示时，展开输入框
-      if (loginError.value.includes('验证码')) showTotpField.value = true
+      const err = data.error || '登录失败'
+      if (err.includes('验证码')) {
+        // 外网或未跳过 2FA：弹窗输入，不把错误糊在表单上
+        if (!totpLoginModal.value) {
+          openTotpLoginModal()
+        } else {
+          totpLoginMsg.value = err
+        }
+        loginError.value = ''
+      } else {
+        loginError.value = err
+      }
     }
   } catch (e) {
     loginError.value = '网络错误'
   } finally {
     loginLoading.value = false
+    totpLoginLoading.value = false
   }
+}
+
+const openTotpLoginModal = () => {
+  totpLoginDigits.value = ['', '', '', '', '', '']
+  totpLoginMsg.value = ''
+  totpLoginModal.value = true
+}
+
+const onTotpDigitInput = (i, ev) => {
+  const v = String(ev.target.value || '').replace(/\D/g, '').slice(-1)
+  totpLoginDigits.value[i] = v
+  ev.target.value = v
+  if (v && i < 5) {
+    document.getElementById(`totp-login-d-${i + 1}`)?.focus()
+  }
+}
+
+const onTotpDigitKeydown = (i, ev) => {
+  if (ev.key === 'Backspace' && !totpLoginDigits.value[i] && i > 0) {
+    document.getElementById(`totp-login-d-${i - 1}`)?.focus()
+  }
+  if (ev.key === 'Enter') submitTotpLogin()
+}
+
+const totpLoginCode = () => totpLoginDigits.value.join('')
+
+const submitTotpLogin = async () => {
+  const code = totpLoginCode()
+  if (code.length !== 6) {
+    totpLoginMsg.value = '请输入完整的 6 位动态验证码'
+    return
+  }
+  totpLoginMsg.value = ''
+  totpLoginLoading.value = true
+  await login(code)
 }
 
 const logout = () => {
@@ -232,6 +292,12 @@ const loadConfig = async () => {
     configEditGuest.value = data.guest_page_enabled !== false
     configEditSkipTotp.value = data.skip_totp_on_intranet === true
     configEditContact.value = data.contact_info || ''
+    configEditWebhookEnabled.value = data.webhook_enabled === true
+    configEditWebhookURL.value = data.webhook_url || ''
+    configEditWebhookHeaders.value = data.webhook_headers || ''
+    configEditWebhookBody.value = data.webhook_body || ''
+    configEditWebhookRetry.value = data.webhook_retry ?? 1
+    configEditWebhookThrottle.value = data.webhook_throttle_seconds ?? 2
   }
 }
 
@@ -327,13 +393,27 @@ const saveConfig = async () => {
     configSaveMsgType.value = 'error'
     return
   }
+  if (configEditWebhookEnabled.value && !configEditWebhookURL.value.trim()) {
+    configSaveMsg.value = '已开启 Webhook 时 URL 不能为空'
+    configSaveMsgType.value = 'error'
+    return
+  }
+  let retry = parseInt(configEditWebhookRetry.value)
+  if (isNaN(retry) || retry < 0) retry = 0
+  if (retry > 5) retry = 5
   const { ok, data } = await apiFetch('/api/admin/config', {
     method: 'PUT',
     body: JSON.stringify({
       register_level: level,
       guest_page_enabled: configEditGuest.value,
       skip_totp_on_intranet: configEditSkipTotp.value,
-      contact_info: configEditContact.value
+      contact_info: configEditContact.value,
+      webhook_enabled: configEditWebhookEnabled.value,
+      webhook_url: configEditWebhookURL.value.trim(),
+      webhook_headers: configEditWebhookHeaders.value,
+      webhook_body: configEditWebhookBody.value,
+      webhook_retry: retry,
+      webhook_throttle_seconds: Math.min(60, Math.max(0, parseInt(configEditWebhookThrottle.value) || 0))
     })
   })
   if (ok) {
@@ -341,12 +421,92 @@ const saveConfig = async () => {
     configData.value.guest_page_enabled = configEditGuest.value
     configData.value.skip_totp_on_intranet = configEditSkipTotp.value
     configData.value.contact_info = configEditContact.value
+    configData.value.webhook_enabled = configEditWebhookEnabled.value
+    configData.value.webhook_url = configEditWebhookURL.value.trim()
+    configData.value.webhook_headers = configEditWebhookHeaders.value
+    configData.value.webhook_body = configEditWebhookBody.value
+    configData.value.webhook_retry = retry
+    configData.value.webhook_throttle_seconds = Math.min(60, Math.max(0, parseInt(configEditWebhookThrottle.value) || 0))
     configSaveMsg.value = '已保存'
     configSaveMsgType.value = 'success'
     setTimeout(() => configSaveMsg.value = '', 2000)
   } else {
     configSaveMsg.value = data.error || '配置修改失败'
     configSaveMsgType.value = 'error'
+  }
+}
+
+const testWebhook = async () => {
+  webhookTestMsg.value = ''
+  if (!configEditWebhookURL.value.trim()) {
+    webhookTestMsg.value = '请先填写 URL'
+    webhookTestMsgType.value = 'error'
+    return
+  }
+  // 先把当前表单写入服务端，再测（测试接口读的是运行时配置）
+  const { ok: saveOk, data: saveData } = await apiFetch('/api/admin/config', {
+    method: 'PUT',
+    body: JSON.stringify({
+      webhook_enabled: configEditWebhookEnabled.value,
+      webhook_url: configEditWebhookURL.value.trim(),
+      webhook_headers: configEditWebhookHeaders.value,
+      webhook_body: configEditWebhookBody.value,
+      webhook_retry: Math.min(5, Math.max(0, parseInt(configEditWebhookRetry.value) || 0)),
+      webhook_throttle_seconds: Math.min(60, Math.max(0, parseInt(configEditWebhookThrottle.value) || 0))
+    })
+  })
+  if (!saveOk) {
+    webhookTestMsg.value = saveData.error || '保存配置失败，无法测试'
+    webhookTestMsgType.value = 'error'
+    return
+  }
+  webhookTesting.value = true
+  const { ok, data } = await apiFetch('/api/admin/webhook/test', { method: 'POST' })
+  webhookTesting.value = false
+  if (ok) {
+    webhookTestMsg.value = data.message || '测试推送成功'
+    webhookTestMsgType.value = 'success'
+  } else {
+    webhookTestMsg.value = data.error || '测试推送失败'
+    webhookTestMsgType.value = 'error'
+  }
+}
+
+const saveWebhookOnly = async () => {
+  webhookSaveMsg.value = ''
+  if (configEditWebhookEnabled.value && !configEditWebhookURL.value.trim()) {
+    webhookSaveMsg.value = '已开启 Webhook 时 URL 不能为空'
+    webhookSaveMsgType.value = 'error'
+    return
+  }
+  let retry = parseInt(configEditWebhookRetry.value)
+  if (isNaN(retry) || retry < 0) retry = 0
+  if (retry > 5) retry = 5
+  const throttle = Math.min(60, Math.max(0, parseInt(configEditWebhookThrottle.value) || 0))
+  const { ok, data } = await apiFetch('/api/admin/config', {
+    method: 'PUT',
+    body: JSON.stringify({
+      webhook_enabled: configEditWebhookEnabled.value,
+      webhook_url: configEditWebhookURL.value.trim(),
+      webhook_headers: configEditWebhookHeaders.value,
+      webhook_body: configEditWebhookBody.value,
+      webhook_retry: retry,
+      webhook_throttle_seconds: throttle
+    })
+  })
+  if (ok) {
+    configData.value.webhook_enabled = configEditWebhookEnabled.value
+    configData.value.webhook_url = configEditWebhookURL.value.trim()
+    configData.value.webhook_headers = configEditWebhookHeaders.value
+    configData.value.webhook_body = configEditWebhookBody.value
+    configData.value.webhook_retry = retry
+    configData.value.webhook_throttle_seconds = throttle
+    webhookSaveMsg.value = '已保存'
+    webhookSaveMsgType.value = 'success'
+    setTimeout(() => webhookSaveMsg.value = '', 2000)
+  } else {
+    webhookSaveMsg.value = data.error || '保存失败'
+    webhookSaveMsgType.value = 'error'
   }
 }
 
@@ -474,23 +634,13 @@ onMounted(async () => {
       <p class="admin-login-hint">登录后，MQTT 控制台会自动加载与管理员账号关联的连接配置。</p>
       <div class="form-group">
         <label>用户名</label>
-        <input v-model="loginForm.username" placeholder="管理员用户名" @keyup.enter="login" />
+        <input v-model="loginForm.username" placeholder="管理员用户名" @keyup.enter="login('')" />
       </div>
       <div class="form-group">
         <label>密码</label>
-        <input v-model="loginForm.password" type="password" placeholder="管理员密码" @keyup.enter="login" />
+        <input v-model="loginForm.password" type="password" placeholder="管理员密码" @keyup.enter="login('')" />
       </div>
-      <div class="form-group" v-if="totpEnabled || showTotpField">
-        <label>动态验证码</label>
-        <input
-          v-model="loginForm.totp_code"
-          inputmode="numeric"
-          maxlength="6"
-          placeholder="Authenticator 6 位动态码"
-          autocomplete="one-time-code"
-          @keyup.enter="login"
-        />
-      </div>
+      <!-- 2FA 不再常驻表单：密码正确且服务器要求时弹出验证码框 -->
       <div class="form-group">
         <label>登录有效期</label>
         <select v-model.number="loginForm.session_days" class="config-select">
@@ -502,7 +652,10 @@ onMounted(async () => {
         </select>
       </div>
       <div v-if="loginError" class="msg error">{{ loginError }}</div>
-      <button class="submit-btn" @click="login" :disabled="loginLoading">
+      <p v-if="totpEnabled" class="admin-login-hint" style="font-size:0.85em;color:var(--text-muted)">
+        本账号已开启两步验证；登录时若服务器要求，会弹出验证码窗口。
+      </p>
+      <button class="submit-btn" @click="login('')" :disabled="loginLoading">
         {{ loginLoading ? '登录中...' : '登录' }}
       </button>
     </div>
@@ -515,6 +668,7 @@ onMounted(async () => {
         <button :class="['tab', { active: activeTab === 'create' }]" @click="activeTab = 'create'">创建用户</button>
         <button :class="['tab', { active: activeTab === 'acl' }]" @click="activeTab = 'acl'">ACL编辑</button>
         <button :class="['tab', { active: activeTab === 'config' }]" @click="activeTab = 'config'">配置</button>
+        <button :class="['tab', { active: activeTab === 'webhook' }]" @click="activeTab = 'webhook'">Webhook</button>
       </div>
 
       <!-- Users Tab -->
@@ -671,6 +825,64 @@ onMounted(async () => {
         </div>
         <div v-else class="loading">加载中...</div>
       </div>
+
+      <!-- Webhook Tab -->
+      <div v-if="activeTab === 'webhook'" class="tab-content">
+        <div class="tab-header">
+          <h3>Webhook 通知</h3>
+        </div>
+        <div v-if="configData">
+          <p class="webhook-hint">插口开关翻转时向 URL 发送 HTTP POST（不向排插下发命令）。</p>
+
+          <label class="webhook-field-label">开启</label>
+          <select v-model="configEditWebhookEnabled" class="config-select webhook-select">
+            <option :value="true">开启 — 翻转时推送</option>
+            <option :value="false">关闭</option>
+          </select>
+
+          <label class="webhook-field-label">URL</label>
+          <input v-model="configEditWebhookURL" class="webhook-input" placeholder="https://example.com/notify?text=${message}" />
+
+          <label class="webhook-field-label">Header（每行一条）</label>
+          <textarea v-model="configEditWebhookHeaders" class="webhook-textarea" rows="5"
+            placeholder="Authorization: Bearer xxx&#10;X-Token: 123456"></textarea>
+
+          <label class="webhook-field-label">Body 模板（POST JSON）</label>
+          <textarea v-model="configEditWebhookBody" class="webhook-textarea" rows="10"
+            placeholder='{"group_id":123,"message":"${message}"}'></textarea>
+
+          <div class="webhook-row">
+            <div class="webhook-row-item">
+              <label class="webhook-field-label">失败重试</label>
+              <select v-model.number="configEditWebhookRetry" class="config-select">
+                <option :value="0">0 — 不重试</option>
+                <option :value="1">1</option>
+                <option :value="2">2</option>
+                <option :value="3">3</option>
+              </select>
+            </div>
+            <div class="webhook-row-item">
+              <label class="webhook-field-label">防刷屏合并</label>
+              <select v-model.number="configEditWebhookThrottle" class="config-select">
+                <option :value="0">0 — 不合并（每次翻转都推）</option>
+                <option :value="1">1 秒窗口</option>
+                <option :value="2">2 秒窗口（推荐）</option>
+                <option :value="5">5 秒窗口</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="webhook-actions">
+            <button class="submit-btn webhook-btn" @click="saveWebhookOnly">保存 Webhook</button>
+            <button class="submit-btn webhook-btn webhook-btn-secondary" @click="testWebhook" :disabled="webhookTesting">
+              {{ webhookTesting ? '测试中...' : '测试推送' }}
+            </button>
+          </div>
+          <div v-if="webhookSaveMsg" :class="['msg', webhookSaveMsgType]" style="margin-top:10px">{{ webhookSaveMsg }}</div>
+          <div v-if="webhookTestMsg" :class="['msg', webhookTestMsgType]" style="margin-top:10px">{{ webhookTestMsg }}</div>
+        </div>
+        <div v-else class="loading">加载中...</div>
+      </div>
     </div>
 
     <!-- Delete User Modal -->
@@ -776,6 +988,36 @@ onMounted(async () => {
         <div class="modal-actions">
           <button class="submit-btn" @click="submitEditPassword">确认修改</button>
           <button class="cancel-btn" @click="editModal = false">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2FA 登录弹窗：模糊遮罩 + 6 位数字 -->
+    <div v-if="totpLoginModal" class="totp-login-overlay" @click.self="totpLoginModal = false">
+      <div class="totp-login-modal" role="dialog" aria-modal="true">
+        <div class="totp-shield" aria-hidden="true">🛡</div>
+        <h3>需要2FA验证</h3>
+        <p class="totp-login-hint">请输入2FA验证码</p>
+        <div class="totp-digits">
+          <input
+            v-for="(_, i) in 6"
+            :id="`totp-login-d-${i}`"
+            :key="i"
+            class="totp-digit"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="1"
+            :value="totpLoginDigits[i]"
+            @input="onTotpDigitInput(i, $event)"
+            @keydown="onTotpDigitKeydown(i, $event)"
+          />
+        </div>
+        <div v-if="totpLoginMsg" class="msg error">{{ totpLoginMsg }}</div>
+        <div class="modal-actions">
+          <button class="cancel-btn" @click="totpLoginModal = false" :disabled="totpLoginLoading">取消</button>
+          <button class="submit-btn" @click="submitTotpLogin" :disabled="totpLoginLoading">
+            {{ totpLoginLoading || loginLoading ? '验证中...' : '登录' }}
+          </button>
         </div>
       </div>
     </div>
@@ -886,8 +1128,10 @@ h1 {
   box-shadow: 0 2px 8px var(--shadow-color);
 }
 .admin-panel {
-  max-width: 900px;
-  padding: 20px;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 20px 24px;
 }
 h2, h3 {
   color: var(--text-heading);
@@ -1168,6 +1412,75 @@ h2, h3 {
   font-size: 0.9em;
   width: 280px;
 }
+/* Webhook 表单：整行铺满，避免 Body 顶出容器 */
+.webhook-hint {
+  margin: 0 0 16px;
+  color: var(--text-secondary, #888);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.webhook-field-label {
+  display: block;
+  margin: 14px 0 6px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: 0.9em;
+}
+.webhook-input,
+.webhook-textarea {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.45;
+}
+.webhook-textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+.webhook-select {
+  min-width: 200px;
+}
+.webhook-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 6px;
+}
+.webhook-row-item {
+  min-width: 0;
+  width: auto;
+}
+.webhook-row-item .config-select {
+  max-width: 100%;
+}
+.webhook-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+.webhook-btn {
+  width: auto;
+  min-width: 140px;
+  padding: 10px 24px;
+}
+.webhook-btn-secondary {
+  background: var(--bg-secondary, #eee);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+.webhook-btn-secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
 /* TOTP */
 .del-btn-inline {
   margin-left: 8px;
@@ -1261,5 +1574,69 @@ h2, h3 {
   text-align: center;
   color: var(--text-muted);
   padding: 40px;
+}
+/* 2FA 登录弹窗 */
+.totp-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 16px;
+}
+.totp-login-modal {
+  width: min(400px, 100%);
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 32px 28px 24px;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.28);
+  text-align: center;
+}
+.totp-shield {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 12px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #e8f1ff, #d6e8ff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.9em;
+  line-height: 1;
+}
+.totp-login-modal h3 {
+  margin: 0 0 6px;
+  color: var(--text-heading);
+}
+.totp-login-hint {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: 0.95em;
+}
+.totp-digits {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.totp-digit {
+  width: 44px;
+  height: 52px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: center;
+  font-size: 1.35em;
+  font-weight: 600;
+  outline: none;
+}
+.totp-digit:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.2);
 }
 </style>

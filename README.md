@@ -23,6 +23,15 @@
   - 配置：管理员改 `admin_password` 后重启自动同步 mosquitto passwd（不再需要手动删用户）；定时任务支持真正删除（`tasks_replace` 全量替换语义 + 任务行删除按钮）
   - 前端：修复切换设备时定时任务/高级设置缓存串台；倒计时到期停用后不再被设备重连恢复"复活"；移动端访问不再覆盖服务端保存的插口布局；注册页一键添加的 MAC 大小写与主流程一致；管理员面板对 WAF/502 等非 JSON 响应容错
 
+- **v2.1.0**（可靠性修复 + Webhook）：
+  - ACL 文件读写加锁，避免并发注册/追加 MAC 写坏文件
+  - `appendACLRules` 在用户块不存在时补写 `device/ztc1/set`（V2 控制必需）
+  - V2 调度器改为 **发布成功后再记 fire**；失败不落库，本分钟后续 tick 可重试
+  - 新增 **通用 Webhook**：检测到插口开关翻转（与任务日志同源，V1/V2/手动均可）时 HTTP POST 到外部机器人；管理页可配 URL/Header/Body 模板/重试，并支持「测试推送」
+  - 模板变量：`${event}` `${mac}` `${mac_upper}` `${plug}` `${prev}` `${cur}` `${action}` `${time}` `${count}` `${message}` `${flips}`
+  - **防刷屏**：`webhook_throttle_seconds`（默认 2s）窗口内多次翻转合并为一条 `plug_flip_batch`；0=不合并
+  - 说明：Webhook **只出站**，不向排插下发 MQTT；需 `power_collect_enabled: true`（翻转检测挂在功耗采集订阅上）
+
 - **注册页** (`/register`)：用户自助注册，填写用户名、密码和设备 MAC 地址，后端自动创建 mosquitto 账户并生成 ACL 规则
 - **管理页** (`/admin`)：管理员登录后可增删改用户、手动编辑 ACL 文件、开关注册功能
 - **控制台** (`/`)：原有 MQTT 设备控制台（zTC1 智能插排）

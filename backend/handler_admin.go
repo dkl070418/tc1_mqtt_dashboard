@@ -233,14 +233,26 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			"totp_enabled":          cfg.TOTPSecret != "",
 			"skip_totp_on_intranet": cfg.SkipTOTPOnIntranet,
 			"contact_info":          cfg.ContactInfo,
+			"webhook_enabled":       cfg.WebhookEnabled,
+			"webhook_url":           cfg.WebhookURL,
+			"webhook_headers":       cfg.WebhookHeaders,
+			"webhook_body":          cfg.WebhookBody,
+			"webhook_retry":         cfg.WebhookRetry,
+			"webhook_throttle_seconds": webhookThrottleSec(),
 		})
 
 	case http.MethodPut:
 		var req struct {
-			RegisterLevel      *int    `json:"register_level"`
-			GuestPageEnabled   *bool   `json:"guest_page_enabled"`
-			SkipTOTPOnIntranet *bool   `json:"skip_totp_on_intranet"`
-			ContactInfo        *string `json:"contact_info"`
+			RegisterLevel          *int    `json:"register_level"`
+			GuestPageEnabled       *bool   `json:"guest_page_enabled"`
+			SkipTOTPOnIntranet     *bool   `json:"skip_totp_on_intranet"`
+			ContactInfo            *string `json:"contact_info"`
+			WebhookEnabled         *bool   `json:"webhook_enabled"`
+			WebhookURL             *string `json:"webhook_url"`
+			WebhookHeaders         *string `json:"webhook_headers"`
+			WebhookBody            *string `json:"webhook_body"`
+			WebhookRetry           *int    `json:"webhook_retry"`
+			WebhookThrottleSeconds *int    `json:"webhook_throttle_seconds"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonError(w, "请求格式错误", http.StatusBadRequest)
@@ -262,6 +274,38 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.ContactInfo != nil {
 			cfg.ContactInfo = *req.ContactInfo
+		}
+		if req.WebhookEnabled != nil {
+			cfg.WebhookEnabled = *req.WebhookEnabled
+		}
+		if req.WebhookURL != nil {
+			cfg.WebhookURL = strings.TrimSpace(*req.WebhookURL)
+		}
+		if req.WebhookHeaders != nil {
+			cfg.WebhookHeaders = *req.WebhookHeaders
+		}
+		if req.WebhookBody != nil {
+			cfg.WebhookBody = *req.WebhookBody
+		}
+		if req.WebhookRetry != nil {
+			n := *req.WebhookRetry
+			if n < 0 {
+				n = 0
+			}
+			if n > 5 {
+				n = 5
+			}
+			cfg.WebhookRetry = n
+		}
+		if req.WebhookThrottleSeconds != nil {
+			n := *req.WebhookThrottleSeconds
+			if n < 0 {
+				n = 0
+			}
+			if n > 60 {
+				n = 60
+			}
+			cfg.WebhookThrottleSeconds = &n
 		}
 
 		if err := persistConfig(); err != nil {

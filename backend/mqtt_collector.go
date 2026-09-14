@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,13 +68,34 @@ func (pc *PowerCollector) subscribeDevices(c mqtt.Client) {
 		time.AfterFunc(30*time.Second, func() { pc.subscribeDevices(c) })
 		return
 	}
-	for _, mac := range macs {
+	for _, raw := range macs {
+		// MQTT topic 大小写敏感：V1 用小写 MAC，V2 固件用大写 MAC。
+		// 双大小写订阅，消息统一归一到小写 MAC 再入库/推 webhook。
+		macLower := strings.ToLower(strings.NewReplacer(":", "", "-", "").Replace(raw))
+		macUpper := strings.ToUpper(macLower)
+		handler := pc.makeHandler(macLower)
 		topics := []string{
-			fmt.Sprintf("device/ztc1/%s/sensor", mac),
-			fmt.Sprintf("device/ztc1/%s/state", mac),
+			fmt.Sprintf("device/ztc1/%s/sensor", macLower),
+			fmt.Sprintf("device/ztc1/%s/state", macLower),
+			fmt.Sprintf("device/ztc1/%s/sensor", macUpper),
+			fmt.Sprintf("device/ztc1/%s/state", macUpper),
 		}
 		for _, topic := range topics {
-			t := c.Subscribe(topic, 0, pc.makeHandler(mac))
+			t := c.Subscribe(topic, 0, handler)
+			t.WaitTimeout(5 * time.Second)
+			if t.Error() != nil {
+				log.Printf("订阅 %s 失败: %v", topic, t.Error())
+			} else {
+				log.Printf("已订阅 %s", topic)
+			}
+		}
+		// V2 设备名/插口名在 HA discovery config 里（state 无顶层 name）
+		haHandler := pc.makeHAConfigHandler(macLower)
+		for _, topic := range []string{
+			fmt.Sprintf("homeassistant/switch/%s/+/config", macUpper),
+			fmt.Sprintf("homeassistant/switch/%s/+/config", macLower),
+		} {
+			t := c.Subscribe(topic, 0, haHandler)
 			t.WaitTimeout(5 * time.Second)
 			if t.Error() != nil {
 				log.Printf("订阅 %s 失败: %v", topic, t.Error())
@@ -83,12 +106,59 @@ func (pc *PowerCollector) subscribeDevices(c mqtt.Client) {
 	}
 }
 
+// makeHAConfigHandler 从 HA discovery config 提取设备名与插口名（V2 用）
+func (pc *PowerCollector) makeHAConfigHandler(mac string) mqtt.MessageHandler {
+	macLower := strings.ToLower(mac)
+	return func(c mqtt.Client, msg mqtt.Message) {
+		var payload struct {
+			Name   string `json:"name"`
+			Device struct {
+				Name string `json:"name"`
+			} `json:"device"`
+		}
+		if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
+			return
+		}
+		// topic: homeassistant/switch/<MAC>/socket_N/config 或 .../led/config
+		parts := strings.Split(msg.Topic(), "/")
+		if len(parts) < 5 {
+			return
+		}
+		entity := parts[len(parts)-2]
+
+		if strings.TrimSpace(payload.Device.Name) != "" {
+			flipNames.mu.Lock()
+			if flipNames.devices == nil {
+				flipNames.devices = make(map[string]string)
+			}
+			flipNames.devices[macLower] = strings.TrimSpace(payload.Device.Name)
+			flipNames.mu.Unlock()
+		}
+
+		if strings.HasPrefix(entity, "socket_") && strings.TrimSpace(payload.Name) != "" {
+			idx, err := strconv.Atoi(strings.TrimPrefix(entity, "socket_"))
+			if err != nil || idx < 0 || idx > 5 {
+				return
+			}
+			flipNames.mu.Lock()
+			if flipNames.plugs[macLower] == nil {
+				flipNames.plugs[macLower] = make(map[int]string)
+			}
+			flipNames.plugs[macLower][idx] = strings.TrimSpace(payload.Name)
+			flipNames.mu.Unlock()
+		}
+	}
+}
+
 func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 	return func(c mqtt.Client, msg mqtt.Message) {
 		var payload map[string]any
 		if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
 			return
 		}
+
+		// 缓存设备/插口名，供 Webhook 文案使用
+		observeFlipNames(mac, payload)
 
 		// 先记录插口状态翻转（即使功率异常也不遗漏状态变化）
 		pc.detectPlugFlips(mac, payload)
@@ -171,13 +241,16 @@ func (pc *PowerCollector) detectPlugFlips(mac string, payload map[string]any) {
 	pc.mu.Unlock()
 
 	for _, f := range flips {
-		pc.store.InsertTaskLog(TaskLogRecord{
+		rec := TaskLogRecord{
 			MAC:     mac,
 			PlugIdx: f.plug,
 			PrevOn:  f.prev,
 			CurOn:   f.cur,
 			TS:      now,
-		})
+		}
+		pc.store.InsertTaskLog(rec)
+		// 翻转即推 webhook（异步；仅出站 HTTP，不向设备发 MQTT）
+		notifyWebhookAsync(rec)
 	}
 }
 

@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v2.0.1'
+const APP_VERSION = 'v2.1.0'
 
 const router = useRouter()
 
@@ -32,6 +32,27 @@ const STORAGE_ADMIN_DEVICES = 'mqtt_admin_devices'
 const adminManaged = ref(Boolean(
   localStorage.getItem('mqtt_admin_token') && localStorage.getItem('mqtt_admin_mqtt_config')
 ))
+const adminUsername = ref('')
+
+const loadAdminUsername = () => {
+  try {
+    const raw = localStorage.getItem('mqtt_admin_mqtt_config')
+    if (!raw) { adminUsername.value = ''; return }
+    const conf = JSON.parse(raw)
+    adminUsername.value = conf.username || ''
+  } catch (e) {
+    adminUsername.value = ''
+  }
+}
+loadAdminUsername()
+
+const logoutAdmin = () => {
+  localStorage.removeItem('mqtt_admin_token')
+  localStorage.removeItem('mqtt_admin_mqtt_config')
+  localStorage.removeItem('mqtt_admin_devices')
+  adminUsername.value = ''
+  window.dispatchEvent(new CustomEvent('mqtt-admin-logout'))
+}
 
 // 访客页面开关（服务器 /api/register/status 下发）
 // false 且未登录管理员 → 整页跳转管理员登录页
@@ -69,10 +90,12 @@ const switchDeviceSource = (useAdminDevices) => {
 }
 
 const handleAdminLogin = () => {
+  loadAdminUsername()
   switchDeviceSource(true)
   loadDeviceConfigs()
 }
 const handleAdminLogout = () => {
+  adminUsername.value = ''
   switchDeviceSource(false)
   // 退出管理员后若访客页面已被关闭，回到管理员登录页
   fetch('/api/register/status', { cache: 'no-store' })
@@ -955,13 +978,25 @@ applyTheme(theme.value)
   </div>
   <div v-else class="container">
     <div class="header-bar">
-        <h1>zTC1 管理终端</h1>
+        <h1 class="header-title">zTC1 管理终端</h1>
         <div class="header-actions">
-          <router-link to="/register" class="nav-link">MQTT 用户注册</router-link>
-          <router-link to="/admin" class="nav-link">管理员入口</router-link>
           <button class="theme-btn" @click="cycleTheme" :title="themeTitle">{{ themeIcon }}</button>
           <button class="refresh-btn" @click="refreshAllStates" :title="'强制刷新全部设备插口状态'">🔄</button>
-          <button class="settings-btn" @click="openImportExport" title="配置迁移">⚙️</button>
+          <button class="settings-btn migrate-btn" @click="openImportExport" title="配置迁移">📦</button>
+          <div class="header-auth">
+            <template v-if="adminManaged">
+              <router-link to="/admin" class="nav-link admin-entry-link" title="管理员设置">⚙️</router-link>
+              <span class="admin-user-chip" :title="adminUsername || '管理员'">
+                <span class="admin-user-icon">👤</span>
+                <span class="admin-user-name">{{ adminUsername || '管理员' }}</span>
+              </span>
+              <button class="logout-btn" @click="logoutAdmin" title="退出管理员">登出</button>
+            </template>
+            <template v-else>
+              <router-link to="/register" class="nav-link">注册</router-link>
+              <router-link to="/admin" class="nav-link admin-entry-link" title="管理员设置">⚙️</router-link>
+            </template>
+          </div>
         </div>
     </div>
 
@@ -1076,10 +1111,6 @@ applyTheme(theme.value)
         </div>
       </div>
     </div>
-    
-    <div v-else class="welcome">
-      <p>请先连接 MQTT 服务器</p>
-    </div>
 
     <footer class="app-footer">
       版本 {{ APP_VERSION }}
@@ -1116,17 +1147,76 @@ body {
 .header-bar {
     position: relative;
     display: flex;
-    justify-content: center;
+    justify-content: space-between;
     align-items: center;
     margin-bottom: 20px;
     flex-wrap: wrap;
     gap: 10px;
 }
+.header-title {
+    margin: 0;
+    flex: 0 0 auto;
+    text-align: left;
+}
 .header-actions {
     display: flex;
     gap: 4px;
     align-items: center;
+    margin-left: auto;
     z-index: 1;
+}
+.header-auth {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 4px;
+    padding-left: 4px;
+    border-left: 1px solid var(--border-light, #e0e0e0);
+}
+/* 压过后面的 .nav-link（否则齿轮被 padding/灰底撑开，夜间模式尤其明显） */
+.nav-link.admin-entry-link {
+    font-size: 1.35em;
+    text-decoration: none;
+    line-height: 1;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border-radius: 4px;
+    opacity: 0.95;
+}
+.nav-link.admin-entry-link:hover {
+    opacity: 1;
+    background: var(--bg-hover);
+}
+.admin-user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 140px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 0.85em;
+}
+.admin-user-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.logout-btn {
+    background: transparent;
+    border: 1px solid var(--border-color, #ccc);
+    border-radius: 6px;
+    padding: 2px 10px;
+    cursor: pointer;
+    color: var(--text-secondary, #666);
+    font-size: 0.85em;
+}
+.logout-btn:hover {
+    color: #ef9a9a;
+    border-color: #c62828;
+    background: rgba(198, 40, 40, 0.08);
 }
 
 /* Mobile: header wraps to separate line */
@@ -1138,11 +1228,17 @@ body {
   .header-bar h1 {
     order: 1;
     margin-bottom: 10px;
+    text-align: left;
   }
   .header-actions {
     order: 2;
-    justify-content: center;
+    justify-content: flex-end;
     flex-wrap: wrap;
+  }
+  .header-auth {
+    border-left: none;
+    padding-left: 0;
+    margin-left: 4px;
   }
 }
 .settings-btn, .theme-btn {

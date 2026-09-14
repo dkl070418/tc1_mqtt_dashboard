@@ -54,5 +54,16 @@ smtp:
   from: "example@fjrcn.cn"
   tls: true   # true=SSL/TLS(465), false=STARTTLS(587)
 
+# Webhook：插口状态翻转时 POST 到外部机器人（空 URL / enabled=false 则不推）
+# 模板变量: ${event} ${mac} ${mac_upper} ${plug} ${prev} ${cur} ${action} ${time} ${count} ${message} ${flips}
+# 防刷屏: webhook_throttle_seconds 窗口内多次翻转合并为一条(event=plug_flip_batch)；0=不合并
+# webhook_enabled: false
+# webhook_url: ""
+# webhook_headers: |
+#   Authorization: Bearer xxx
+# webhook_body: '{"event":"${event}","mac":"${mac}","plug":${plug},"action":"${action}","time":"${time}","count":${count},"message":"${message}"}'
+# webhook_retry: 1
+# webhook_throttle_seconds: 2
+
 # 服务配置
 listen_addr: ":8080"

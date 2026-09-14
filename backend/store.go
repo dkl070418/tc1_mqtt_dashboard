@@ -10,9 +10,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/pbkdf2"
 )
+
+// aclMu 串行化 ACL 文件读改写，避免并发注册/追加 MAC 时写坏文件
+var aclMu sync.Mutex
 
 // 从passwd文件读取所有用户名
 func listUsers() ([]string, error) {
@@ -82,6 +86,12 @@ const v2SetTopicRule = "topic readwrite device/ztc1/set"
 // 添加ACL规则
 // mac 已由 normalizeMAC 标准化为 AA:BB:CC:DD:EE:FF 格式
 func addACLRules(username, mac string) error {
+	aclMu.Lock()
+	defer aclMu.Unlock()
+	return addACLRulesLocked(username, mac)
+}
+
+func addACLRulesLocked(username, mac string) error {
 	// 4 种 MAC 变体
 	macColonUpper := strings.ToUpper(mac)
 	macColonLower := strings.ToLower(mac)
@@ -130,8 +140,15 @@ func readACL() (string, error) {
 	return string(data), nil
 }
 
-// 写入ACL文件
+// 写入ACL文件（对外入口，加锁）
 func writeACL(content string) error {
+	aclMu.Lock()
+	defer aclMu.Unlock()
+	return writeACLLocked(content)
+}
+
+// writeACLLocked 调用方须已持有 aclMu
+func writeACLLocked(content string) error {
 	return os.WriteFile(cfg.ACLPath, []byte(content), 0644)
 }
 
@@ -235,6 +252,8 @@ func deviceMACFromTopic(topic string) string {
 
 // 删除用户的ACL规则
 func removeUserACL(username string) error {
+	aclMu.Lock()
+	defer aclMu.Unlock()
 	data, err := os.ReadFile(cfg.ACLPath)
 	if err != nil {
 		return err
@@ -264,7 +283,7 @@ func removeUserACL(username string) error {
 		result = append(result, line)
 	}
 
-	return writeACL(strings.Join(result, "\n"))
+	return writeACLLocked(strings.Join(result, "\n"))
 }
 
 type UserInfo struct {
@@ -360,6 +379,8 @@ func verifyMosquittoHash(password, storedHash string) bool {
 
 // appendACLRules 为已有用户在 ACL 文件中追加规则（不重复添加 user 行）
 func appendACLRules(username, mac string) error {
+	aclMu.Lock()
+	defer aclMu.Unlock()
 	macColonUpper := strings.ToUpper(mac)
 	macColonLower := strings.ToLower(mac)
 	macPlainUpper := strings.ReplaceAll(macColonUpper, ":", "")
@@ -405,15 +426,17 @@ func appendACLRules(username, mac string) error {
 		}
 	}
 
-	// 若无用户块，则在文件末尾全新追加
+	// 若无用户块，则在文件末尾全新追加（须包含 v2 固定命令 topic，见 v2SetTopicRule）
 	if lastUserBlock < 0 {
-		f, err := os.OpenFile(cfg.ACLPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return err
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("\nuser %s\n", username))
+		b.WriteString(rules.String())
+		// rules 可能已以换行结尾；保证 v2 规则独占一行
+		if !strings.HasSuffix(rules.String(), "\n") {
+			b.WriteString("\n")
 		}
-		defer f.Close()
-		_, err = fmt.Fprintf(f, "\nuser %s\n%s", username, rules.String())
-		return err
+		b.WriteString(v2SetTopicRule + "\n")
+		return writeACLLocked(string(data) + b.String())
 	}
 
 	// 在用户块内追加：找到块的结束位置（下一个 user 前的最后一个 topic 行）
@@ -450,5 +473,5 @@ func appendACLRules(username, mac string) error {
 	result = append(result, toInsert...)
 	result = append(result, lines[insertAt:]...)
 
-	return writeACL(strings.Join(result, "\n"))
+	return writeACLLocked(strings.Join(result, "\n"))
 }

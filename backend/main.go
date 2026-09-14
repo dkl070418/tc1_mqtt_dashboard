@@ -38,7 +38,30 @@ type Config struct {
 	MQTTUri             string     `yaml:"mqtt_uri"`
 	MQTTWSUri           string     `yaml:"mqtt_ws_uri"`
 	SMTP                SMTPConfig `yaml:"smtp"`
-	ListenAddr          string     `yaml:"listen_addr"`
+	// Webhook：插口状态翻转时向外部机器人推送（纯出站 HTTP，不影响排插）
+	// ThrottleSeconds nil=默认2s；0=关闭节流；>0=窗口内合并
+	WebhookEnabled         bool   `yaml:"webhook_enabled"`
+	WebhookURL             string `yaml:"webhook_url"`
+	WebhookHeaders         string `yaml:"webhook_headers"`
+	WebhookBody            string `yaml:"webhook_body"`
+	WebhookRetry           int    `yaml:"webhook_retry"`
+	WebhookThrottleSeconds *int   `yaml:"webhook_throttle_seconds"`
+	ListenAddr             string `yaml:"listen_addr"`
+}
+
+// webhookThrottleSec 合并窗口（秒）：未配置默认 2，显式 0 表示关闭节流
+func webhookThrottleSec() int {
+	if cfg.WebhookThrottleSeconds == nil {
+		return 2
+	}
+	n := *cfg.WebhookThrottleSeconds
+	if n < 0 {
+		return 0
+	}
+	if n > 60 {
+		return 60
+	}
+	return n
 }
 
 var cfg Config
@@ -198,6 +221,7 @@ func main() {
 	mux.HandleFunc("/api/admin/user/", adminAuth(handleUserOps))
 	mux.HandleFunc("/api/admin/acl", adminAuth(handleACL))
 	mux.HandleFunc("/api/admin/config", adminAuth(handleConfig))
+	mux.HandleFunc("/api/admin/webhook/test", adminAuth(handleWebhookTest))
 	mux.HandleFunc("/api/register/status", handleRegisterStatus)
 	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
 		if returnTo := safeReturnTo(r.URL.Query().Get("return_to")); returnTo != "" {
