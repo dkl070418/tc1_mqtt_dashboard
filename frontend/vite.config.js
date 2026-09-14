@@ -7,11 +7,11 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://192.168.15.201:8071',
+        target: 'http://127.0.0.1:8080',
         changeOrigin: true
       },
       '/mqtt': {
-        target: 'ws://192.168.15.201:8071',
+        target: 'ws://127.0.0.1:8071',
         changeOrigin: true,
         ws: true
       }
