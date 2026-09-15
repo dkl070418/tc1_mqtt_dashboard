@@ -135,6 +135,17 @@ cd frontend && npm ci && npm run build && cd ..
 docker compose up -d --build
 ```
 
+**方式三：GitHub Actions（推送 git tag 自动构建）**
+
+公开仓库在推送 `v*` 标签时，会自动构建 `linux/amd64` + `linux/arm64` 并推到阿里云：
+
+```bash
+git tag v2.1.1
+git push origin v2.1.1
+```
+
+需在仓库 Secrets 配置 `ALIYUN_USERNAME` / `ALIYUN_PASSWORD`。workflow 见 `.github/workflows/docker-publish.yml`。
+
 ### 4. 多架构镜像构建推送
 
 ```bash
