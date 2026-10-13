@@ -22,10 +22,15 @@ import (
 //   on=1 启用; repeat 位掩码 bit0=周一..bit6=周日, 0=一次性; action 1=开 0=关。
 //
 // 防重复: sqlite 表 scheduler_fires 记录 (mac, plug, task, fire_minute),
-// 同一分钟内同一任务只触发一次; 后端重启后从 device_config 重建, 无状态丢失。
+// fire_minute 取任务"应执行时刻"(而非实际下发时刻), 所以补发/重试都不会重复触发;
+// 同一分钟同一任务只触发一次; 后端重启后从 device_config 重建, 无状态丢失。
 // 一次性任务(repeat=0): 配置变更后按其 hour:minute 在"当天"到点触发一次,
 // 触发后由 fires 表去重, 不会在同一天反复执行(与固件执行后不停用的行为对齐,
 // 前端已有"倒计时到期自动停用 task_4"的清理机制)。
+//
+// 错过补发: 配置项 scheduler_catchup_minutes(默认 30, 0=关闭)。后端在那一分钟
+// 不活着(容器重启/NAS 睡眠/发送失败)时, 窗口内后续 tick 会补发, 日志标"补发"。
+// 窗口 = 1 分钟时判定与旧版"只认当前分钟"逐条等价(见 scheduler_test.go)。
 
 const schedulerTickInterval = 15 * time.Second
 
@@ -71,7 +76,11 @@ func (s *TaskScheduler) Start(broker, username, password string) error {
 	s.client = client
 
 	go s.loop()
-	log.Println("[scheduler] 定时调度器已启动 (仅对 firmware=v2 的设备生效)")
+	if catchup := schedulerCatchupMinutes(); catchup > 0 {
+		log.Printf("[scheduler] 定时调度器已启动 (仅对 firmware=v2 的设备生效), 错过补发窗口=%d 分钟", catchup)
+	} else {
+		log.Printf("[scheduler] 定时调度器已启动 (仅对 firmware=v2 的设备生效), 错过补发已关闭(只认当前分钟)")
+	}
 	return nil
 }
 
@@ -154,14 +163,31 @@ func loadV2ScheduledTasks() ([]taskSpec, error) {
 	return out, nil
 }
 
-// tick 每个调度周期: 找出"当前分钟匹配"且"本分钟未触发过"的任务并下发。
+// dueOccurrence 返回任务在 [now-window, now] 内最近一次"应执行时刻"。
+// 回看昨天只为覆盖 23:5x 的任务在零点后补发; 更早的时刻由窗口本身挡掉。
+func dueOccurrence(t taskSpec, now time.Time, window time.Duration) (time.Time, bool) {
+	for dayOffset := 0; dayOffset <= 1; dayOffset++ {
+		day := now.AddDate(0, 0, -dayOffset)
+		if t.repeat != 0 {
+			// 星期: 周一=bit0 .. 周日=bit6
+			if t.repeat&(1<<((int(day.Weekday())+6)%7)) == 0 {
+				continue
+			}
+		}
+		occ := time.Date(day.Year(), day.Month(), day.Day(), t.hour, t.minute, 0, 0, now.Location())
+		if late := now.Sub(occ); late >= 0 && late < window {
+			return occ, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// tick 每个调度周期: 找出"补发窗口内到期"且"该分钟未触发过"的任务并下发。
 func (s *TaskScheduler) tick() {
 	// 东八区与固件/前端任务语义一致
 	loc := time.FixedZone("CST", 8*3600)
 	now := time.Now().In(loc)
-	fireMinute := now.Format("2006-01-02 15:04")
-	// 星期: 周一=bit0 .. 周日=bit6
-	bit := (int(now.Weekday()) + 6) % 7
+	window := time.Minute + time.Duration(schedulerCatchupMinutes())*time.Minute
 
 	tasks, err := loadV2ScheduledTasks()
 	if err != nil {
@@ -169,18 +195,18 @@ func (s *TaskScheduler) tick() {
 		return
 	}
 	for _, t := range tasks {
-		if t.hour != now.Hour() || t.minute != now.Minute() {
+		occ, due := dueOccurrence(t, now, window)
+		if !due {
 			continue
 		}
-		if t.repeat != 0 && t.repeat&(1<<bit) == 0 {
-			continue // 周期任务: 今天不执行
-		}
+		// fire_minute 记"应执行时刻", 补发与重试都不会与按时触发撞车
+		fireMinute := occ.Format("2006-01-02 15:04")
 		if s.store.HasSchedulerFire(t.mac, t.plugIdx, t.taskKey, fireMinute) {
-			continue // 本分钟已触发过(含重启后的重复 tick)
+			continue // 该分钟已触发过(含重启后的重复 tick)
 		}
 
 		payload := fmt.Sprintf("set socket %s %d %d", strings.ToUpper(t.mac), t.plugIdx, t.action)
-		// 先发布成功再记 fire：失败不落库，本分钟后续 tick(约15s)可重试
+		// 先发布成功再记 fire：失败不落库，窗口内后续 tick(约15s)可重试
 		token := s.client.Publish("device/ztc1/set", 0, false, payload)
 		ok := token.WaitTimeout(5*time.Second) && token.Error() == nil
 		if !ok {
@@ -188,11 +214,16 @@ func (s *TaskScheduler) tick() {
 			if token.Error() != nil {
 				errMsg = token.Error().Error()
 			}
-			log.Printf("[scheduler] 下发失败(本分钟将重试) %s 插口%d %s: %s", t.mac, t.plugIdx, t.taskKey, errMsg)
+			log.Printf("[scheduler] 下发失败(窗口内将重试) %s 插口%d %s: %s", t.mac, t.plugIdx, t.taskKey, errMsg)
 			continue
 		}
 		s.store.MarkSchedulerFire(t.mac, t.plugIdx, t.taskKey, fireMinute)
-		log.Printf("[scheduler] 已触发: %s 插口%d 任务%s -> %s", t.mac, t.plugIdx, t.taskKey, payload)
+		if late := now.Sub(occ); late >= time.Minute {
+			log.Printf("[scheduler] 已补发: %s 插口%d 任务%s 应执行 %s (迟到 %d 分钟) -> %s",
+				t.mac, t.plugIdx, t.taskKey, fireMinute, int(late.Minutes()), payload)
+		} else {
+			log.Printf("[scheduler] 已触发: %s 插口%d 任务%s -> %s", t.mac, t.plugIdx, t.taskKey, payload)
+		}
 	}
 }
 

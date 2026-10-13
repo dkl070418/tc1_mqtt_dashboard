@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v2.1.0'
+const APP_VERSION = 'v2.1.1'
 
 const router = useRouter()
 
@@ -54,6 +54,26 @@ const logoutAdmin = () => {
   window.dispatchEvent(new CustomEvent('mqtt-admin-logout'))
 }
 
+// 管理员会话失效/写回失败的可见反馈。
+// 旧行为是只 console.warn：登录令牌过期后页面照样显示"已保存"，刷新即消失
+// （实测 10-08 令牌过期后连续 5 天设置的定时任务全部没进服务器）。
+let lastAdminNoticeAt = 0
+const notifyAdminError = (msg) => {
+  const now = Date.now()
+  // 60s 节流：倒计时清理等周期任务会连续调用保存，避免弹窗刷屏
+  if (now - lastAdminNoticeAt < 60000) return
+  lastAdminNoticeAt = now
+  alert(msg)
+}
+
+let unauthorizedNotified = false
+const handleAdminUnauthorized = () => {
+  if (unauthorizedNotified) return
+  unauthorizedNotified = true
+  notifyAdminError('管理员登录已失效（会话到期）。\n刚才的修改只存在浏览器里，没有保存到服务器，刷新就会丢失。\n请重新登录后再设置。')
+  logoutAdmin()
+}
+
 // 访客页面开关（服务器 /api/register/status 下发）
 // false 且未登录管理员 → 整页跳转管理员登录页
 // 管理员登录态无需等待，直接渲染
@@ -90,6 +110,9 @@ const switchDeviceSource = (useAdminDevices) => {
 }
 
 const handleAdminLogin = () => {
+  // 重新登录后允许再次提示
+  unauthorizedNotified = false
+  lastAdminNoticeAt = 0
   loadAdminUsername()
   switchDeviceSource(true)
   loadDeviceConfigs()
@@ -804,6 +827,9 @@ const saveDeviceDisplayName = async ({ mac, displayName }) => {
     body: JSON.stringify({ display_name: displayName })
   })
   const data = await response.json().catch(() => ({}))
+  if (response.status === 401) {
+    handleAdminUnauthorized()
+  }
   if (!response.ok) throw new Error(data.error || '保存设备名称失败')
 
   const entry = deviceList.value.find(item => item.mac === mac)
@@ -820,6 +846,10 @@ const loadDeviceConfigs = async () => {
     const response = await fetch('/api/admin/device-config', {
       headers: { Authorization: `Bearer ${token}` }
     })
+    if (response.status === 401) {
+      handleAdminUnauthorized()
+      return
+    }
     if (!response.ok) return
     const data = await response.json().catch(() => ({}))
     Object.keys(deviceConfigs).forEach(k => delete deviceConfigs[k])
@@ -868,7 +898,15 @@ const saveDeviceConfig = async ({ mac, layout, remarks, tasks, tasksReplace, fir
   })
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
-    throw new Error(data.error || '保存设备配置失败')
+    if (response.status === 401) {
+      handleAdminUnauthorized()
+      throw new Error('管理员登录已失效')
+    }
+    const msg = data.error || `保存设备配置失败 (HTTP ${response.status})`
+    // 各调用点只 console.warn（为了不卡 UI），失败必须在这里显式提示，
+    // 否则用户会以为定时任务已经存好了
+    notifyAdminError(`保存到服务器失败：${msg}\n界面上的显示只是浏览器本地状态，刷新后会丢失。`)
+    throw new Error(msg)
   }
   if (!deviceConfigs[norm]) deviceConfigs[norm] = {}
   if (payload.layout !== undefined) deviceConfigs[norm].layout = payload.layout
@@ -901,6 +939,9 @@ const fetchTaskLogs = async ({ mac, plug, limit }) => {
     headers: { Authorization: `Bearer ${token}` }
   })
   const data = await res.json().catch(() => ({}))
+  if (res.status === 401) {
+    handleAdminUnauthorized()
+  }
   if (!res.ok) throw new Error(data.error || '获取任务日志失败')
   return data
 }

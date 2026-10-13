@@ -47,6 +47,24 @@ type Config struct {
 	WebhookRetry           int    `yaml:"webhook_retry"`
 	WebhookThrottleSeconds *int   `yaml:"webhook_throttle_seconds"`
 	ListenAddr             string `yaml:"listen_addr"`
+	// V2 定时任务补发窗口（分钟）：后端在应执行那一分钟没活着（重启/发不出去）时，
+	// 允许在之后 N 分钟内补发。nil=默认 30；0=关闭补发（只认当前分钟，与旧版逐条等价）；上限 120。
+	SchedulerCatchupMinutes *int `yaml:"scheduler_catchup_minutes"`
+}
+
+// schedulerCatchupMinutes 补发窗口分钟数：未配置=30，显式 0=关闭，负数按 0，上限 120
+func schedulerCatchupMinutes() int {
+	if cfg.SchedulerCatchupMinutes == nil {
+		return 30
+	}
+	n := *cfg.SchedulerCatchupMinutes
+	if n < 0 {
+		return 0
+	}
+	if n > 120 {
+		return 120
+	}
+	return n
 }
 
 // webhookThrottleSec 合并窗口（秒）：未配置默认 2，显式 0 表示关闭节流

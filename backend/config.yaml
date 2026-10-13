@@ -65,5 +65,11 @@ smtp:
 # webhook_retry: 1
 # webhook_throttle_seconds: 2
 
+# V2 定时任务错过补发窗口（分钟）
+# 后端在"应执行那一分钟"不活着（容器重启 / NAS 休眠 / MQTT 发送失败）时，
+# 之后窗口内的 tick 会补发该任务，日志标 "已补发"。0 = 关闭补发（只认当前分钟，与 v2.1.0 行为一致）；上限 120。
+# 未配置时默认 30；实际生效值打印在容器启动日志 "[scheduler] ... 补发窗口="
+scheduler_catchup_minutes: 30
+
 # 服务配置
 listen_addr: ":8080"
