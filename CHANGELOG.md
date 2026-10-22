@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.1.3（依赖升级，本地未部署）
+
+`govulncheck` 实测：**升级前代码可达 3 个漏洞 → 升级后 0 个**（`go run golang.org/x/vuln/cmd/govulncheck@latest ./...`，工具链 go1.27.3）。
+**Go 源码一行没改**（paho v1.5 保留了我们用到的全部 API），只有 `go.mod` / `go.sum`。
+
+### 修掉的三个（都是"我们的代码确实会调用到"）
+
+| 编号 | 模块 | 旧 → 新 | 内容 |
+|------|------|---------|------|
+| GO-2026-6278 | gorilla/websocket | v1.5.0 → **v1.5.3** | WebSocket 掩码密钥用了弱 PRNG；经 paho 的 websocket 连接路径可达 |
+| GO-2025-4173 | eclipse/paho.mqtt.golang | v1.4.3 → **v1.5.1** | 字符串超过 65535 字节时编码错误；调度器/采集器的 Connect·Publish 可达 |
+| GO-2025-3503 | golang.org/x/net | v0.10.0 → **v0.61.0** | HTTP 代理可用带 Zone ID 的 IPv6 绕过；经 paho 的 `proxy.FromEnvironment` 可达 |
+
+其余依赖一并升到当前稳定线：`x/crypto v0.17.0→v0.58.0`、`x/sync v0.1.0→v0.24.0`、`x/sys v0.22.0→v0.49.0`、`modernc.org/sqlite v1.34.5→v1.61.0`（含 libc/mathutil/memory 与 humanize·strftime·isatty 间接项）。
+
+残留 1 条属**不可操作**：GO-2026-5932 = `golang.org/x/crypto/openpgp` 包"不再维护、设计上不安全"，`Fixed in: N/A`；我们没 import 该包（扫描同时报 `0 vulnerabilities in packages you import`）。
+
+### 为什么这次升级要实测两条链路（sqlite 跨了 26 个小版本）
+
+| 判据 | 读数（NAS 上一次性 broker + 独立临时目录，跑完已清） |
+|------|------|
+| 调度器经 **paho v1.5.1** 真实发消息 | broker 侧 `mosquitto_sub` 抓到 `device/ztc1/set set socket D0BAE4637BE5 1 1`（不看我们的日志，看线上真发了什么） |
+| 采集器经 v1.5.1 收 + **sqlite v1.61** 写 | 灌两条设备状态 → `power_samples=2`、`task_logs=1`（翻转 1→0）、`scheduler_fires=1`（30s 内多个 tick 只触发一次） |
+| **打开你现有的生产库文件**（由旧驱动写的 22 MB 库，含 -wal/-shm 一起复制） | 前后 `pragma integrity_check=ok`；新程序写入后 `power_samples 210488→210489`、`agg_1min 73482→73483`、`scheduler_fires 10→11`，无报错、无迁移异常；生产原件只被复制未被写 |
+| `go build` / `go vet` / `go test`（go1.27.3） | 全部通过 |
+| 首轮"power_samples=0" | 是**我取证脚本自己等太短**：采样是异步批写、ticker 10 秒 flush；把等待改成 16 秒后即为上表读数。同时暴露一个既有小行为：进程被 SIGKILL 时最多丢 10 秒采样（本次没改它） |
+
+### 没动的东西
+
+- mosquitto 镜像仍钉 `eclipse-mosquitto:2.0.18`；`frontend` 的 npm 依赖本次未动（要升单独说）。
+- v2.1.1/v2.1.2 的行为改动没有任何回退。
+
+### 回滚
+
+`backend/go.mod` + `backend/go.sum` 回退到上一版即可（无源码耦合）；或直接 compose tag 回 `v2.1.2`。
+
 ## v2.1.2（Go 工具链安全升级，本地未部署）
 
 ### 为什么发这一版

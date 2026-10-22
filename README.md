@@ -32,6 +32,10 @@
   - **防刷屏**：`webhook_throttle_seconds`（默认 2s）窗口内多次翻转合并为一条 `plug_flip_batch`；0=不合并
   - 说明：Webhook **只出站**，不向排插下发 MQTT；需 `power_collect_enabled: true`（翻转检测挂在功耗采集订阅上）
 
+- **v2.1.3**（依赖升级）：`govulncheck` 可达漏洞 **3 → 0**（gorilla/websocket 1.5.3、paho.mqtt.golang 1.5.1、
+    golang.org/x/net 0.61.0），并升到 `x/crypto 0.58.0` / `modernc.org/sqlite 1.61.0` 等当前稳定线。**Go 源码零改动**。
+    跨版本最大的 sqlite 驱动单独验过：用你生产库的副本跑真程序，`integrity_check=ok`、读写正常、无迁移异常。
+
 - **v2.1.2**（Go 工具链安全升级）：构建镜像从 `golang:1.23-alpine` 钉到 **`golang:1.27.3-alpine`**，
     `go.mod` 语言版本对齐到 `go 1.27`。Go 的标准库漏洞是**编译期**带进二进制的，所以必须重编重发才有效
     （2026-10-08 的 `go1.26.9/go1.27.2` 修 `crypto/tls`/`net/http`/`net/textproto`/`os`，
