@@ -25,6 +25,8 @@
 | 采集器经 v1.5.1 收 + **sqlite v1.61** 写 | 灌两条设备状态 → `power_samples=2`、`task_logs=1`（翻转 1→0）、`scheduler_fires=1`（30s 内多个 tick 只触发一次） |
 | **打开你现有的生产库文件**（由旧驱动写的 22 MB 库，含 -wal/-shm 一起复制） | 前后 `pragma integrity_check=ok`；新程序写入后 `power_samples 210488→210489`、`agg_1min 73482→73483`、`scheduler_fires 10→11`，无报错、无迁移异常；生产原件只被复制未被写 |
 | `go build` / `go vet` / `go test`（go1.27.3） | 全部通过 |
+| **阿里云下来的镜像本身**（`docker create` + `docker cp /app/mqtt_mgr` 后 `go version -m`） | 内嵌 `go1.27.3`，链接的正是 paho **v1.5.1** / websocket **v1.5.3** / x/net **v0.61.0** / x/crypto **v0.58.0** / sqlite **v1.61.0** |
+| 对那个**出厂二进制**跑 `govulncheck -mode=binary` | `No vulnerabilities found.`（0 可达；模块级仍剩 openpgp "不再维护"那条，`Fixed in: N/A`） |
 | 首轮"power_samples=0" | 是**我取证脚本自己等太短**：采样是异步批写、ticker 10 秒 flush；把等待改成 16 秒后即为上表读数。同时暴露一个既有小行为：进程被 SIGKILL 时最多丢 10 秒采样（本次没改它） |
 
 ### 没动的东西
