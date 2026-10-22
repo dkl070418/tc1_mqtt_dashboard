@@ -1,6 +1,6 @@
 module mqtt_mgr
 
-go 1.23.3
+go 1.27
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.4.3

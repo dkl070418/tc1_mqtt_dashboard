@@ -69,7 +69,8 @@ func verifyCode(email, code string) bool {
 // 发送验证码邮件
 func sendVerificationEmail(to, code string) error {
 	s := cfg.SMTP
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
+	// 用 JoinHostPort 而不是 "%s:%d"：IPv6 字面量必须带方括号，否则拨号失败
+	addr := net.JoinHostPort(s.Host, fmt.Sprint(s.Port))
 	log.Printf("[email] 尝试发送验证码 to=%s smtp=%s tls=%v", to, addr, s.TLS)
 
 	subject := "MQTT 用户注册验证码"

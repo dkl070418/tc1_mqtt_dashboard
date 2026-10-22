@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.1.2（Go 工具链安全升级，本地未部署）
+
+### 为什么发这一版
+
+Go 官方 2026-10-08 / 2026-10-19 两次安全补丁：`go1.26.9`/`go1.27.2` 修 `crypto/tls`、`net/http`、`net/textproto`、`html/template`、`os`；`go1.26.10`/`go1.27.3` 修 `crypto/x509`（go.dev Release History 读数）。
+**Go 服务的漏洞是编译期带进二进制的**（标准库静态链接），所以只要镜像是用旧工具链构建的，换 base image 不解决问题——必须重新编译发布。本项目此前用 `golang:1.23-alpine`，v2.1.0/v2.1.1 的镜像都落在受影响区间内。
+
+### 改动
+
+| 位置 | 改动 |
+|------|------|
+| `backend/Dockerfile` | builder `golang:1.23-alpine` → **`golang:1.27.3-alpine`**（钉死补丁号以便审计；想自动跟随后续补丁就改成 `golang:1.27-alpine`，一行） |
+| `backend/go.mod` | `go 1.23.3` → `go 1.27`，与构建工具链同线（Go 的部分兼容默认值按 `go` 行取值，钉在旧语言版本可能保留旧行为） |
+| `backend/email.go` | 拼 SMTP 地址 `fmt.Sprintf("%s:%d")` → `net.JoinHostPort`：新工具链的 `go vet` 报出 `address format "%s:%d" does not work with IPv6`，这是**我们代码里原有的真 bug**（IPv6 字面量拨号会失败），不是 Go 的回归 |
+| `frontend/src/App.vue` / `docker-compose.yaml` | 版本号 / 镜像 tag → v2.1.2 |
+
+### 本项目的实际暴露面（读了代码，不夸大）
+
+- 后端只监听明文 HTTP `:8080`，TLS 由外层 nginx/WAF 负责 → `crypto/tls` 的服务端路径不在这条上。
+- 真用了出站 TLS 的地方：SMTP（`smtp.qiye.aliyun.com:465`，`tls.DialWithDialer`）和 Webhook（HTTPS POST）→ `crypto/tls` + `crypto/x509` 的客户端路径，以及 `net/textproto`（SMTP 客户端就是 net/textproto 之上）。这批包**确实被链接进我们的二进制**。
+- `html/template` 前端是 Vue，后端没用模板 → 不在面内。
+- ⚠️ 未一手核实：具体 CVE 编号我没能从 go.dev 公告里逐条取到（release history 只列了包名）。第三方分析把 `crypto/tls` 那条写成 CVE-2026-56862 / GO-2026-6090（DoS，CVSS 7.5），我未复核，仅作背景，不作为结论。
+
+### 验证
+
+| 判据 | 读数 |
+|------|------|
+| `go version`（本机） | go1.27.3 windows/amd64 |
+| `go vet ./...` / `go build ./...` / `go test ./...` | 全部通过（vet 在修掉 email.go 那条后重新变干净） |
+| `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build` 后 `go version <产物>` | `go1.27.3` ✔ 证明产物内嵌的正是修复版工具链 |
+| CI 出的 v2.1.2 镜像 | 发布后在 NAS 上 pull 下来 `go version` 复算（CI success ≠ 改动进了镜像，这条必须实测） |
+
+### 回滚
+
+- 工具链回滚：`backend/Dockerfile` 的 FROM 改回 `golang:1.23-alpine`（一行）；`go.mod` 的 `go 1.27` 改回 `go 1.23.3`。
+- 版本回滚：compose 两个 tag 回 `v2.1.1`（阿里云上镜像仍在）。
+
 ## v2.1.1（本地未部署）
 
 针对 2026-10-13 在 NAS 上取证的"定时任务设好后像没存一样消失"。

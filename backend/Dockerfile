@@ -1,5 +1,5 @@
 # ------ 构建阶段（始终在宿主平台编译，交叉输出目标架构二进制）------
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS builder
 ARG TARGETARCH
 ARG TARGETOS=linux
 ARG GOPROXY=https://proxy.golang.org,direct

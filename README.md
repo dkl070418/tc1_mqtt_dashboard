@@ -32,6 +32,12 @@
   - **防刷屏**：`webhook_throttle_seconds`（默认 2s）窗口内多次翻转合并为一条 `plug_flip_batch`；0=不合并
   - 说明：Webhook **只出站**，不向排插下发 MQTT；需 `power_collect_enabled: true`（翻转检测挂在功耗采集订阅上）
 
+- **v2.1.2**（Go 工具链安全升级）：构建镜像从 `golang:1.23-alpine` 钉到 **`golang:1.27.3-alpine`**，
+    `go.mod` 语言版本对齐到 `go 1.27`。Go 的标准库漏洞是**编译期**带进二进制的，所以必须重编重发才有效
+    （2026-10-08 的 `go1.26.9/go1.27.2` 修 `crypto/tls`/`net/http`/`net/textproto`/`os`，
+    2026-10-19 的 `go1.26.10/go1.27.3` 修 `crypto/x509`）。
+    新工具链的 `go vet` 还抓到并修复了 `email.go` 里拼 SMTP 地址不用 `net.JoinHostPort` 的老 bug（IPv6 会拨号失败）。
+
 - **v2.1.1**（会话失效可见 + 定时补发）：
   - 控制台页 `/` 不再静默吞掉管理员会话过期：`GET/PUT /api/admin/device-config` 遇 401 立即弹窗并退回登录页
     （此前只 `console.warn`，界面看着"已保存"，刷新就没了 —— 实测造成定时任务连续几天没写进服务器）
