@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.1.4（前端构建 Node 升级，本地未部署）
+
+| 位置 | 改动 |
+|------|------|
+| `frontend/Dockerfile` | builder `node:20-alpine` → **`node:24.22.1-alpine`**（2026-10 的**最新 LTS 线 Krypton**；v26 是 Current、还没转 LTS，构建镜像不追 Current）。标签存在性用 `docker pull` 实测过 |
+| `docker-compose.yaml` / `App.vue` | 镜像 tag 与页面版本号 → v2.1.4 |
+
+**JS 依赖一行没动**（`package.json` / `package-lock.json` 未改），所以这一版只换"用什么 Node 打包"。
+
+### 本机预验（不拿 CI 当试错）
+
+- `node -v` = v24.22.1、`npm -v` = 11.19.1：先在 `D:/TMP/node24` 解压官方压缩包用**现有 node_modules** 跑 `npm run build` → 通过。
+- 再**复刻 CI 的路径**：另建目录只带 `package.json`/`package-lock.json`/`vite.config.js`/`index.html`/`src`，`npm ci --registry=https://registry.npmmirror.com` + `npm run build` → 通过。
+  npm 11 会提示 `esbuild@0.21.5` 的 postinstall 未被 allowScripts 覆盖 —— 不影响产出（esbuild 的平台二进制走 optionalDependencies），构建正常出 dist。
+
+### 顺带量到的前端依赖体检（**本次没修**，留给你决定）
+
+`npm audit`（官方 registry）：**全量 10 条（1 moderate + 9 high）**，涉及 `@vue/server-renderer`、`esbuild`、`ip-address`、`nanoid`、`postcss`、`rollup`、`source-map-js`、`ws`；其中 `--omit=dev` 还剩 **7 high**，全部归到 `ws`（mqtt.js 带进来的传递依赖）。
+
+⚠️ 但这 7 条**不在浏览器产物里执行**：我在构建出的 `dist/assets/*.js` 里搜 `ws` 独有的错误串（`WebSocket was closed before` / `Invalid WebSocket frame` / `permessage-deflate`）**0 命中**，并对同一批串在 `node_modules/ws/lib` 做**阳性对照**（2/3 命中，证明检索方法有效）。
+⇒ 属"装在你/构建机的 node_modules 里"的风险，不是页面运行时的风险。要收掉就单独发一版跑 `npm audit fix`（非 --force）；`vite 5 → 6/7` 是破坏性升级，另议。
+
+### 验证
+
+| 判据 | 读数 |
+|------|------|
+| 本机 node24 + npm11 构建（含复刻 CI 的 `npm ci`） | 通过 |
+| `node:24.22.1-alpine` 镜像标签 | NAS 上 `docker pull` 成功（验证用镜像随即删除） |
+| CI 出的 v2.1.4 nginx 镜像 | 见下方发布记录：页面版本串与 `umami` 命中数复算 |
+
+### 回滚
+
+`frontend/Dockerfile` 的 FROM 改回 `node:20-alpine`（一行）；或 compose tag 回 `v2.1.3`。
+
 ## v2.1.3（依赖升级，本地未部署）
 
 `govulncheck` 实测：**升级前代码可达 3 个漏洞 → 升级后 0 个**（`go run golang.org/x/vuln/cmd/govulncheck@latest ./...`，工具链 go1.27.3）。

@@ -32,6 +32,8 @@
   - **防刷屏**：`webhook_throttle_seconds`（默认 2s）窗口内多次翻转合并为一条 `plug_flip_batch`；0=不合并
   - 说明：Webhook **只出站**，不向排插下发 MQTT；需 `power_collect_enabled: true`（翻转检测挂在功耗采集订阅上）
 
+- **v2.1.4**（前端构建 Node 升级）：`frontend/Dockerfile` 的 builder 从 `node:20-alpine` 钉到 **`node:24.22.1-alpine`**
+    （当前最新 LTS 线）。JS 依赖未动，只换打包用的 Node；已在本地用 node24+npm11 复刻 CI 的 `npm ci && npm run build` 验通。
 - **v2.1.3**（依赖升级）：`govulncheck` 可达漏洞 **3 → 0**（gorilla/websocket 1.5.3、paho.mqtt.golang 1.5.1、
     golang.org/x/net 0.61.0），并升到 `x/crypto 0.58.0` / `modernc.org/sqlite 1.61.0` 等当前稳定线。**Go 源码零改动**。
     跨版本最大的 sqlite 驱动单独验过：用你生产库的副本跑真程序，`integrity_check=ok`、读写正常、无迁移异常。
