@@ -50,6 +50,29 @@ type Config struct {
 	// V2 定时任务补发窗口（分钟）：后端在应执行那一分钟没活着（重启/发不出去）时，
 	// 允许在之后 N 分钟内补发。nil=默认 30；0=关闭补发（只认当前分钟，与旧版逐条等价）；上限 120。
 	SchedulerCatchupMinutes *int `yaml:"scheduler_catchup_minutes"`
+	// V1 固件周期校时间隔（小时）：v1 排插不联网、不跑 NTP，只能被动接收 setting.time，
+	// 前端只在"打开控制台/设备重连/手动按钮/存倒计时"时推一次，页面长期不开设备时钟就自由漂移。
+	// nil=默认 6；0=关闭（回到纯前端推送的行为）；上限 168(7 天)。
+	V1TimeSyncIntervalHours *int `yaml:"v1_time_sync_interval_hours"`
+	// V1 后端调度：v1（原厂固件）的定时任务原本由排插按自己的时钟执行，而那个时钟无法从外部校准
+	// （setting.time 在原厂固件里没有解析分支）。打开后改由后端按服务器时间执行，
+	// 并自动把设备侧同名任务停用（on:0）防止双触发。默认关闭。
+	V1BackendScheduling bool `yaml:"v1_backend_scheduling"`
+}
+
+// v1TimeSyncIntervalHours 周期校时间隔小时数：未配置=6，显式 0 或负数=关闭，上限 168
+func v1TimeSyncIntervalHours() int {
+	if cfg.V1TimeSyncIntervalHours == nil {
+		return defaultV1TimeSyncIntervalHours
+	}
+	n := *cfg.V1TimeSyncIntervalHours
+	if n <= 0 {
+		return 0
+	}
+	if n > v1TimeSyncMaxIntervalHours {
+		return v1TimeSyncMaxIntervalHours
+	}
+	return n
 }
 
 // schedulerCatchupMinutes 补发窗口分钟数：未配置=30，显式 0=关闭，负数按 0，上限 120
@@ -85,6 +108,9 @@ func webhookThrottleSec() int {
 var cfg Config
 
 var configPath string
+
+// taskScheduler V2 任务调度器 + V1 周期校时的运行实例（未启动时为 nil）
+var taskScheduler *TaskScheduler
 
 // guestPageEnabled 访客页面开关（MQTT 用户控制台）。
 // 配置未设置时默认开启，兼容旧版 config.yaml。
@@ -190,9 +216,11 @@ func main() {
 				log.Printf("警告: 功耗采集器启动失败: %v", err)
 			}
 			// V2 设备定时任务调度器(方案A): 与功耗存储共用 fires 表, 独立 MQTT 连接
-			scheduler := NewTaskScheduler(powerStore)
-			if err := scheduler.Start(broker, cfg.AdminUsername, cfg.AdminPassword); err != nil {
+			// 同一实例还负责 V1 固件的周期校时（见 scheduler.go 末尾）
+			taskScheduler = NewTaskScheduler(powerStore)
+			if err := taskScheduler.Start(broker, cfg.AdminUsername, cfg.AdminPassword); err != nil {
 				log.Printf("警告: 定时调度器启动失败: %v", err)
+				taskScheduler = nil
 			}
 		}
 	}
@@ -240,6 +268,8 @@ func main() {
 	mux.HandleFunc("/api/admin/acl", adminAuth(handleACL))
 	mux.HandleFunc("/api/admin/config", adminAuth(handleConfig))
 	mux.HandleFunc("/api/admin/webhook/test", adminAuth(handleWebhookTest))
+	// V1 周期校时排查：上次/下次推送时间、目标设备、成功失败数、缺 ACL 的设备
+	mux.HandleFunc("/api/admin/diagnostics/time-sync", adminAuth(handleTimeSyncDiagnostics))
 	mux.HandleFunc("/api/register/status", handleRegisterStatus)
 	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
 		if returnTo := safeReturnTo(r.URL.Query().Get("return_to")); returnTo != "" {

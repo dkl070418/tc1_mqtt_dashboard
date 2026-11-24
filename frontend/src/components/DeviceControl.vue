@@ -219,9 +219,21 @@ const closeTimer = () => {
 }
 
 const updateTask = (plugIndex, taskIndex, taskData) => {
-  // v1: 下发固件执行; v2: 固件无定时命令路径, 由后端调度器读配置代为执行,
-  // 这里只更新本地缓存并同步服务端(调度器 15s 内拾取)
-  if (!isV2.value) {
+  // 三态：
+  //   v2            -> 固件无定时通道，任务只进服务器配置（由后端调度器执行）
+  //   v1 + server   -> 后端执行：只写服务器配置，并立刻把设备侧同名槽位停用（防双触发）
+  //   v1 + device   -> 排插自己执行：保持老行为，任务写进设备（安卓 App 也能看到/管理）
+  const execServer = !isV2.value && taskData && taskData.exec === 'server'
+  if (isV2.value) {
+    // 不写设备
+  } else if (execServer) {
+    emit('send-cmd', {
+      mac: props.device.mac,
+      [`plug_${plugIndex}`]: {
+        setting: { [`task_${taskIndex}`]: { ...taskData, on: 0 } }
+      }
+    })
+  } else {
     const cmd = {
       mac: props.device.mac,
       [`plug_${plugIndex}`]: {
@@ -285,7 +297,9 @@ const saveCountdown = async (hours, minutes, action) => {
     minute: target.getMinutes(),
     repeat: 0,
     action,
-    on: 1
+    on: 1,
+    // 倒计时保持原语义：v1 由设备执行；v2 由后端执行
+    exec: isV2.value ? 'server' : 'device'
   }
   updateTask(plugIndex, 4, taskData)
 

@@ -5,7 +5,9 @@ const props = defineProps({
   task: Object,
   index: Number,
   countdownActive: Boolean,  // 该槽位正被倒计时占用（仅任务5）
-  deletable: { type: Boolean, default: false }
+  deletable: { type: Boolean, default: false },
+  // v2 固件没有设备侧定时通道，任务只能由后端执行；v1 可选"设备/服务器"
+  isV2: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['save', 'delete'])
@@ -16,7 +18,8 @@ const localTask = reactive({
   minute: 0,
   repeat: 0,
   action: 1,
-  on: 0
+  on: 0,
+  exec: 'device'   // 'device' = 排插自己执行; 'server' = 后端按服务器时间执行
 })
 
 const days = ['一', '二', '三', '四', '五', '六', '日']
@@ -38,7 +41,11 @@ const isDaySelect = (dayIndex) => {
 }
 
 const save = () => {
-  emit('save', { ...localTask })
+  emit('save', {
+    ...localTask,
+    // v2 一律服务器执行；v1 用表单里的选择（缺省设备执行）
+    exec: props.isV2 ? 'server' : (localTask.exec === 'server' ? 'server' : 'device')
+  })
   editing.value = false
 }
 
@@ -46,10 +53,13 @@ const startEdit = () => {
     // If no task exists yet, init default
     if (!props.task) {
         Object.assign(localTask, {
-            hour: 12, minute: 0, repeat: 0, action: 1, on: 1
+            hour: 12, minute: 0, repeat: 0, action: 1, on: 1,
+            exec: props.isV2 ? 'server' : 'device'
         })
     } else {
         Object.assign(localTask, props.task)
+        if (props.isV2) localTask.exec = 'server'
+        else if (localTask.exec !== 'server') localTask.exec = 'device'
     }
     editing.value = true
 }
@@ -102,6 +112,7 @@ const confirmDelete = () => {
           <span class="ts-chip" :class="task.action ? 'on' : 'off'">{{ task.action ? '开' : '关' }}</span>
           <span class="ts-dot">·</span>
           <span class="ts-repeat">{{ formatRepeat(task.repeat) }}</span>
+          <span v-if="isV2 || task.exec === 'server'" class="ts-chip server">服务器</span>
         </template>
         <span v-else class="ts-empty">（未启用）</span>
         <span class="ts-spacer"></span>
@@ -147,6 +158,21 @@ const confirmDelete = () => {
             启用:
             <input type="checkbox" v-model="localTask.on" :true-value="1" :false-value="0">
         </label>
+      </div>
+
+      <!-- v1 才可选执行位置：设备执行=排插按自己的时钟跑（安卓 App 也能看到并管理）；
+           服务器执行=后端按服务器时间跑，设备侧同名任务会被停用（防双触发） -->
+      <div v-if="!isV2" class="options exec-options">
+        <label>
+            执行位置:
+            <select v-model="localTask.exec">
+                <option value="device">设备（排插自己执行）</option>
+                <option value="server">服务器（后端执行）</option>
+            </select>
+        </label>
+      </div>
+      <div v-if="!isV2 && localTask.exec === 'server'" class="exec-hint">
+        选"服务器"后由后端按服务器时间执行；设备侧同名任务会自动停用，安卓 App 里该任务会显示为关闭。
       </div>
 
       <div class="actions">
@@ -197,6 +223,7 @@ const confirmDelete = () => {
 }
 .ts-chip.on { color: #4caf50; background: rgba(76, 175, 80, 0.12); }
 .ts-chip.off { color: #e53935; background: rgba(229, 57, 53, 0.12); }
+.ts-chip.server { color: #1e88e5; background: rgba(30, 136, 229, 0.12); }
 .ts-dot { color: var(--text-muted); flex: none; }
 .ts-repeat { color: var(--text-muted); flex: none; }
 .ts-empty { color: var(--text-muted); }
@@ -282,6 +309,18 @@ const confirmDelete = () => {
     margin-bottom: 10px;
     font-size: 0.9em;
     color: var(--text-primary);
+}
+
+/* 执行位置选择（仅 v1 显示） */
+.exec-options {
+    justify-content: flex-start;
+    margin-bottom: 6px;
+}
+.exec-hint {
+    font-size: 0.8em;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin-bottom: 10px;
 }
 .options select {
     background: var(--bg-input);

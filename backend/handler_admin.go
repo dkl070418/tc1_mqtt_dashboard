@@ -223,22 +223,25 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		jsonResp(w, map[string]interface{}{
-			"container_name":        cfg.ContainerName,
-			"container_passwd_path": cfg.ContainerPasswdPath,
-			"host_passwd_path":      cfg.HostPasswdPath,
-			"acl_path":              cfg.ACLPath,
-			"acl_patterns":          cfg.ACLPatterns,
-			"register_level":        cfg.RegisterLevel,
-			"guest_page_enabled":    guestPageEnabled(),
-			"totp_enabled":          cfg.TOTPSecret != "",
-			"skip_totp_on_intranet": cfg.SkipTOTPOnIntranet,
-			"contact_info":          cfg.ContactInfo,
-			"webhook_enabled":       cfg.WebhookEnabled,
-			"webhook_url":           cfg.WebhookURL,
-			"webhook_headers":       cfg.WebhookHeaders,
-			"webhook_body":          cfg.WebhookBody,
-			"webhook_retry":         cfg.WebhookRetry,
+			"container_name":           cfg.ContainerName,
+			"container_passwd_path":    cfg.ContainerPasswdPath,
+			"host_passwd_path":         cfg.HostPasswdPath,
+			"acl_path":                 cfg.ACLPath,
+			"acl_patterns":             cfg.ACLPatterns,
+			"register_level":           cfg.RegisterLevel,
+			"guest_page_enabled":       guestPageEnabled(),
+			"totp_enabled":             cfg.TOTPSecret != "",
+			"skip_totp_on_intranet":    cfg.SkipTOTPOnIntranet,
+			"contact_info":             cfg.ContactInfo,
+			"webhook_enabled":          cfg.WebhookEnabled,
+			"webhook_url":              cfg.WebhookURL,
+			"webhook_headers":          cfg.WebhookHeaders,
+			"webhook_body":             cfg.WebhookBody,
+			"webhook_retry":            cfg.WebhookRetry,
 			"webhook_throttle_seconds": webhookThrottleSec(),
+			// v1 后端调度开关：前端据此决定"任务是否还写设备"（开启时任务只进服务器配置）
+			"v1_backend_scheduling":       cfg.V1BackendScheduling,
+			"v1_time_sync_interval_hours": v1TimeSyncIntervalHours(),
 		})
 
 	case http.MethodPut:

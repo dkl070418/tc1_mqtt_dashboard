@@ -7,7 +7,7 @@ import DeviceControl from './components/DeviceControl.vue'
 import ImportExport from './components/ImportExport.vue'
 
 // 前端构建版本号(与镜像 tag 同步)
-const APP_VERSION = 'v2.1.4'
+const APP_VERSION = 'v2.1.7'
 
 const router = useRouter()
 
@@ -500,6 +500,8 @@ const recoverDeviceAfterReconnect = (mac) => {
     const plugPayload = { mac, [`plug_${plugIdx}`]: { setting: {} } }
     const setting = plugPayload[`plug_${plugIdx}`].setting
     Object.entries(tasksMap).forEach(([taskKey, taskData]) => {
+      // exec="server" 的任务由后端执行，不能写回设备（否则双触发）
+      if (taskData && taskData.exec === 'server') return
       setting[taskKey] = sanitizeTaskData(taskData)
     })
     const body = JSON.stringify(plugPayload)

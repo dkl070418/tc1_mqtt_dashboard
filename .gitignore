@@ -28,3 +28,6 @@ Thumbs.db
 *.swo
 
 opencode.json
+
+# ---- 本机编译临时目录(构建缓存/临时文件, 不入库) ----
+.tmpbuild/

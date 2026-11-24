@@ -17,7 +17,7 @@ func mustDate(t *testing.T, ymd string) time.Time {
 }
 
 func testTask(hour, minute, repeat int) taskSpec {
-	return taskSpec{mac: "d0bae4637be5", plugIdx: 1, taskKey: "task_0", hour: hour, minute: minute, repeat: repeat, action: 1}
+	return taskSpec{mac: "c3d4e5f6a7b8", plugIdx: 1, taskKey: "task_0", hour: hour, minute: minute, repeat: repeat, action: 1}
 }
 
 // 2026-10-12 周一 / 10-13 周二 / 10-17 周六 / 10-18 周日

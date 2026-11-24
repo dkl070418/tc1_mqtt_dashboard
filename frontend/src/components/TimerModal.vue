@@ -172,6 +172,7 @@ const stopCountdown = () => {
               :key="n"
               :task="getTask ? getTask(plugIndex, n) : null"
               :index="n"
+              :is-v2="isV2"
               :countdown-active="n === 4 && countdownActive"
               :deletable="!!(getTask && getTask(plugIndex, n)) && !!deleteTask"
               @save="data => updateTask && updateTask(plugIndex, n, data)"
