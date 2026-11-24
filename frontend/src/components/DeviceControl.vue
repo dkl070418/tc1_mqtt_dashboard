@@ -210,8 +210,23 @@ const persistRemarks = () => {
 // Timer Modal
 const timerPlug = ref(-1)
 
+// 查询某插口的完整任务表。
+// 坑：v1 固件对 setting 的回显是"增量"的 —— 只回显本次请求里带的键。
+// 所以列表里看到的任务经常是残缺的（甚至为空），必须显式把 5 个槽位都问一遍。
+// 空对象 = 只读不改（固件只有在 hour/minute/repeat/action/on 齐全且为数字时才写入）。
+const queryPlugTasks = (plugIndex) => {
+  if (isV2.value) return   // v2 的任务存在服务器配置里，不必问设备
+  emit('send-cmd', {
+    mac: props.device.mac,
+    [`plug_${plugIndex}`]: {
+      setting: { task_0: {}, task_1: {}, task_2: {}, task_3: {}, task_4: {} }
+    }
+  })
+}
+
 const openTimer = (index) => {
   timerPlug.value = index
+  queryPlugTasks(index)   // 打开面板即拉一次真实任务表（含手机 App 建的任务）
 }
 
 const closeTimer = () => {
