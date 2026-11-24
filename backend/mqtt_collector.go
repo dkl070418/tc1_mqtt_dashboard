@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,12 +14,13 @@ import (
 )
 
 type PowerCollector struct {
-	store   *PowerStore
-	client  mqtt.Client
-	done    chan struct{}
-	mu      sync.Mutex
-	lastTS  map[string]int64 // mac -> 上次采样时间，用于计算积分间隔
-	plugOn  map[string]map[int]int // mac -> (插口索引 -> 上次 on 状态)，用于检测状态翻转
+	store  *PowerStore
+	client mqtt.Client
+	done   chan struct{}
+	mu     sync.Mutex
+	lastTS map[string]int64          // mac -> 上次采样时间，用于计算积分间隔
+	gaps   map[string][]float64      // mac -> 最近若干个采样间隔，用于自适应积分上限
+	plugOn map[string]map[int]int    // mac -> (插口索引 -> 上次 on 状态)，用于检测状态翻转
 }
 
 func NewPowerCollector(store *PowerStore) *PowerCollector {
@@ -26,8 +28,55 @@ func NewPowerCollector(store *PowerStore) *PowerCollector {
 		store:  store,
 		done:   make(chan struct{}),
 		lastTS: make(map[string]int64),
+		gaps:   make(map[string][]float64),
 		plugOn: make(map[string]map[int]int),
 	}
+}
+
+// gapHistoryLen 自适应上限用多少个历史间隔来取中位数
+const gapHistoryLen = 10
+
+// medianFloat 返回中位数（空切片返回 0）
+func medianFloat(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	cp := append([]float64(nil), v...)
+	sort.Float64s(cp)
+	n := len(cp)
+	if n%2 == 1 {
+		return cp[n/2]
+	}
+	return (cp[n/2-1] + cp[n/2]) / 2
+}
+
+// integralInterval 计算"本次采样代表多长时间"，用于能量积分。
+//
+// 早期实现把间隔硬砍到 30 秒（防断线重连后的巨大间隔），但这对"上报本来就稀疏"的设备是灾难：
+// V2 固件的功率流在 homeassistant/sensor/<MAC>/power/state（默认 2 秒一条），
+// 一旦某台设备的上报周期是分钟级，硬砍会让用电量低估成百上千倍。
+//
+// 现在改成自适应：上限 = max(30s, 3 × 该设备最近间隔的中位数)，再叠一个 1 小时的天花板。
+//   - 2 秒级上报（V1/V2 正常情况）→ 上限仍是 30 秒，行为与旧版一致
+//   - 分钟级上报 → 上限随之放大，能量不再被系统性低估
+//   - 断线重连 / 设备消失很久 → 仍被挡住（最多按 1 小时计）
+func integralInterval(gapS float64, history []float64) float64 {
+	if gapS < 0.5 {
+		return 0.5
+	}
+	capS := 30.0
+	if m := medianFloat(history); m > 0 {
+		if v := 3 * m; v > capS {
+			capS = v
+		}
+	}
+	if capS > 3600 {
+		capS = 3600
+	}
+	if gapS > capS {
+		return capS
+	}
+	return gapS
 }
 
 func (pc *PowerCollector) Start(broker, username, password string) error {
@@ -94,8 +143,17 @@ func (pc *PowerCollector) subscribeDevices(c mqtt.Client) {
 		for _, topic := range []string{
 			fmt.Sprintf("homeassistant/switch/%s/+/config", macUpper),
 			fmt.Sprintf("homeassistant/switch/%s/+/config", macLower),
+			// V2 固件的实时功率流：每 mqtt_report_freq 秒（默认 2s）一条
+			// {"power":"30.098"} —— 之前漏订它，导致 V2 只有"状态变化时"的快照功率，
+			// 采样极其稀疏（实测 8 天 24 条），曲线几乎空白、能量严重低估。
+			fmt.Sprintf("homeassistant/sensor/%s/power/state", macUpper),
+			fmt.Sprintf("homeassistant/sensor/%s/power/state", macLower),
 		} {
-			t := c.Subscribe(topic, 0, haHandler)
+			h := haHandler
+			if strings.Contains(topic, "/power/state") {
+				h = handler // 功率流走能耗处理（解析 + 积分入库），不是命名
+			}
+			t := c.Subscribe(topic, 0, h)
 			t.WaitTimeout(5 * time.Second)
 			if t.Error() != nil {
 				log.Printf("订阅 %s 失败: %v", topic, t.Error())
@@ -150,6 +208,25 @@ func (pc *PowerCollector) makeHAConfigHandler(mac string) mqtt.MessageHandler {
 	}
 }
 
+// parsePowerW 从一条 JSON 载荷里取功率（V1/V2 都是 W，可能是数字也可能是字符串）。
+// 返回 ok=false 表示这条载荷没有功率字段（例如只带插口状态的 state 消息）。
+func parsePowerW(payload map[string]any) (float64, bool) {
+	raw, exists := payload["power"]
+	if !exists {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return v, true
+	case string:
+		var w float64
+		if _, err := fmt.Sscanf(v, "%f", &w); err == nil {
+			return w, true
+		}
+	}
+	return 0, false
+}
+
 func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 	return func(c mqtt.Client, msg mqtt.Message) {
 		var payload map[string]any
@@ -163,14 +240,10 @@ func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 		// 先记录插口状态翻转（即使功率异常也不遗漏状态变化）
 		pc.detectPlugFlips(mac, payload)
 
-		var powerW float64
-		if p, ok := payload["power"]; ok {
-			switch v := p.(type) {
-			case float64:
-				powerW = v
-			case string:
-				fmt.Sscanf(v, "%f", &powerW)
-			}
+		// 没有功率字段的载荷（只带插口状态）到此为止
+		powerW, hasPower := parsePowerW(payload)
+		if !hasPower {
+			return
 		}
 		if powerW < 0 {
 			// 负值功率：疑似设备功耗芯片损坏，不采集统计
@@ -180,18 +253,23 @@ func (pc *PowerCollector) makeHandler(mac string) mqtt.MessageHandler {
 		pc.mu.Lock()
 		last, had := pc.lastTS[mac]
 		pc.lastTS[mac] = now
+		gapHistory := pc.gaps[mac]
 		pc.mu.Unlock()
 
-		interval := 2.0 // 默认 2 秒（首次采样或重置用）
+		gap := 2.0 // 默认 2 秒（首次采样或重置用）
 		if had && now > last {
-			interval = float64(now - last)
+			gap = float64(now - last)
 		}
-		if interval < 0.5 {
-			interval = 0.5
+		// 自适应上限：见 integralInterval 的注释（V2 功率流 2 秒一条，稀疏源不再被硬砍）
+		interval := integralInterval(gap, gapHistory)
+
+		pc.mu.Lock()
+		h := append(gapHistory, gap)
+		if len(h) > gapHistoryLen {
+			h = h[len(h)-gapHistoryLen:]
 		}
-		if interval > 30 {
-			interval = 30 // 防止断线重连后产生巨大间隔
-		}
+		pc.gaps[mac] = h
+		pc.mu.Unlock()
 
 		pc.store.Insert(PowerSample{
 			MAC:       mac,

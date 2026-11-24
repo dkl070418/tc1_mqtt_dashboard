@@ -67,6 +67,12 @@ func NewPowerStore(dbPath string) (*PowerStore, error) {
 	go store.taskLogLoop()
 	go store.aggLoop()
 	go store.cleanupLoop()
+	// 启动后补一次小时聚合：先全量重算（修历史陈旧行），再走增量（最近 3 小时 + 补缺）
+	go func() {
+		time.Sleep(5 * time.Second)
+		store.recomputeAllHours()
+		store.rollupHourly()
+	}()
 	return store, nil
 }
 
@@ -361,7 +367,9 @@ func (s *PowerStore) flushBatch(batch []PowerSample) error {
 }
 
 func (s *PowerStore) aggLoop() {
-	ticker := time.NewTicker(1 * time.Hour)
+	// 10 分钟一次：既让"本月用电"里的当前小时尽快出现，又足够便宜
+	// （每次只重算最近 3 小时 + 补算缺失小时）
+	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
@@ -373,9 +381,36 @@ func (s *PowerStore) aggLoop() {
 	}
 }
 
-// rollupHourly 从分钟聚合重算最近 3 小时的小时聚合。
-// 使用 INSERT OR REPLACE 幂等重算（而非旧版 ON CONFLICT 累加），
-// 同一小时被多次执行结果一致，且迟到/补写的分钟数据能自动并入。
+// recomputeAllHours 从分钟聚合全量重算小时聚合。
+//
+// 为什么需要：旧版 rollupHourly 只重算"最近 3 小时"，更早的小时一旦存在就不会再更新。
+// 那些行可能是用不完整（或旧算法 30 秒封顶算出）的分钟数据生成的，就一直错着。
+// 分钟聚合保留 6 个月、是真正的权威数据，所以启动时全量重算一次即可把历史对齐。
+// 后续每 10 分钟只做"最近 3 小时 + 缺失小时"，代价很小。
+func (s *PowerStore) recomputeAllHours() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`
+		INSERT OR REPLACE INTO power_agg_1h(mac, bucket_ts, avg_w, max_w, min_w, energy_kwh, sample_count)
+		SELECT mac, (bucket_ts / 3600) * 3600,
+			AVG(avg_w), MAX(max_w), MIN(min_w),
+			SUM(energy_wh) / 1000.0,
+			SUM(sample_count)
+		FROM power_agg_1min
+		GROUP BY mac, (bucket_ts / 3600) * 3600`)
+	if err != nil {
+		log.Printf("小时聚合全量重算失败: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("小时聚合已从分钟聚合全量重算: %d 行", n)
+	}
+}
+
+// rollupHourly 从分钟聚合重算小时聚合。
+//   - 最近 3 小时：INSERT OR REPLACE 幂等重算（当前小时也能及时更新）
+//   - 更早的"分钟有、小时没有"的小时：补算（容器重启/停机超过 3 小时会留下这类空洞，
+//     而"本月用电"读的正是 power_agg_1h，不补就会永久少算）
 func (s *PowerStore) rollupHourly() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -390,6 +425,26 @@ func (s *PowerStore) rollupHourly() {
 		GROUP BY mac, (bucket_ts / 3600) * 3600`)
 	if err != nil {
 		log.Printf("小时聚合失败: %v", err)
+		return
+	}
+
+	// 补算"分钟聚合有、小时聚合没有"的小时。
+	// 容器重启或停机超过 3 小时时，那些小时永远进不了"最近 3 小时"窗口，
+	// 而"本月用电"读的正是 power_agg_1h —— 不补就会永久少算。
+	// 用 LEFT JOIN 精确定位缺失组合；补齐后每次只剩极少数行。
+	if _, err := s.db.Exec(`
+		INSERT OR REPLACE INTO power_agg_1h(mac, bucket_ts, avg_w, max_w, min_w, energy_kwh, sample_count)
+		SELECT m.mac, m.h, m.avg_w, m.max_w, m.min_w, m.energy_kwh, m.cnt
+		FROM (
+			SELECT mac, (bucket_ts / 3600) * 3600 AS h,
+				AVG(avg_w) AS avg_w, MAX(max_w) AS max_w, MIN(min_w) AS min_w,
+				SUM(energy_wh) / 1000.0 AS energy_kwh, SUM(sample_count) AS cnt
+			FROM power_agg_1min
+			GROUP BY mac, h
+		) m
+		LEFT JOIN power_agg_1h g ON g.mac = m.mac AND g.bucket_ts = m.h
+		WHERE g.bucket_ts IS NULL`); err != nil {
+		log.Printf("小时聚合补算失败: %v", err)
 	}
 }
 
