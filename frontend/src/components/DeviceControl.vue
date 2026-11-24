@@ -363,11 +363,22 @@ const stopCountdown = () => {
   persistCountdownMetas()
 }
 
+// 取某个槽位的任务。
+//
+// 语义要点：v1 固件每个插口恒定有 5 个 task 槽位，**没有"删除"命令**（发 null 会被忽略），
+// 所谓删除只能写 on=0 —— 设备上会永久留一条"停用残留行"。若直接把设备 state 当成任务表，
+// 就会在用户删掉之后又把这条残留行显示成"（未启用）"，看起来像没删掉。
+//
+// 因此规则是：
+//   1) 服务端配置里有记录（不管启用与否）→ 以它为准，用设备的最新状态补充
+//   2) 服务端没有记录（典型是手机 App 直接建在设备上的）→ 只有"设备上启用中"的才显示，
+//      设备上 on=0 的残留行一律视为已删除，不显示
 const getTask = (plugIndex, taskIndex) => {
-  const plug = getPlug(plugIndex)
-  const deviceTask = plug?.setting?.[`task_${taskIndex}`]
-  if (deviceTask) return deviceTask
-  return tasksCache[plugIndex]?.[`task_${taskIndex}`] || null
+  const taskKey = `task_${taskIndex}`
+  const cached = tasksCache[plugIndex]?.[taskKey] || null
+  const deviceTask = getPlug(plugIndex)?.setting?.[taskKey] || null
+  if (cached) return deviceTask || cached
+  return deviceTask && deviceTask.on === 1 ? deviceTask : null
 }
 
 // 插口当前显示名（本地备注优先）
