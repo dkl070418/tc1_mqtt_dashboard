@@ -32,6 +32,25 @@
   - **防刷屏**：`webhook_throttle_seconds`（默认 2s）窗口内多次翻转合并为一条 `plug_flip_batch`；0=不合并
   - 说明：Webhook **只出站**，不向排插下发 MQTT；需 `power_collect_enabled: true`（翻转检测挂在功耗采集订阅上）
 
+- **v2.1.7**（执行位置细化到每个任务）：任务对象新增 `exec` 字段——`"server"` 由后端按服务器时间执行
+  （设备侧同名槽位写 `on:0` 防双触发），缺省/`"device"` 仍由排插自己执行、**后端完全不碰**
+  （安卓 App 建的任务因此不受影响）。前端任务编辑器新增"执行位置：设备 / 服务器"（仅 v1 显示，v2 固定服务器），
+  服务器任务在列表里带蓝色"服务器"标记。实测四种冲突场景全通过，详见 CHANGELOG。
+
+- **v2.1.6**（V1 固件改由后端调度）：v1（原厂闭源固件）的定时任务原本靠排插自己的时钟，而那个时钟
+  无法从外部校准（`setting.time` 在原厂固件里没有解析分支）。打开 `v1_backend_scheduling` 后，
+  v1 任务改由后端按**服务器时间**执行（15s tick，去重/补发沿用 `scheduler_fires` + `scheduler_catchup_minutes`），
+  并自动把**设备侧同名任务停用**（`on:0`，每分钟复查）防止双触发。默认关闭，不配时行为与 v2.1.5 一致。
+  实测（生产 `a1b2c3d4e5f6` plug_0）：01:38:47 接管 → 01:41:10 触发 → 01:41:22 灯亮，一次到位。
+
+- **v2.1.5**（V1 固件周期校时）：V1 排插不跑 NTP，时间只能由控制台推 `setting.time`，而此前**只有前端**
+  在"打开页面/设备重连/手点按钮/存倒计时"时推，页面长期不开设备时钟就自由漂移（±20~50 ppm ≈ 1~2 分钟/月）。
+  现在后端每 `v1_time_sync_interval_hours`（默认 6，`0`=关闭，上限 168）向所有 `firmware != v2` 的设备推一次时间，
+  **启动即校一次**；只写 `setting.time`，不动插口开关，V2 设备跳过（它们的任务由后端按服务器时间执行）。
+  排查：日志 `[timesync] ...` 与 `GET /api/admin/diagnostics/time-sync`（含 `missing_acl` —— mosquitto 丢包是静默的）。
+  真机实测：V1 固件执行 MQTT 写入的定时任务时，实际动作**比设定分钟晚约 60 秒**（固件分钟级检查粒度，
+  与 NTP/晶振无关）；校时本身无法回读设备时钟，只能靠行为验证。
+
 - **v2.1.4**（前端构建 Node 升级）：`frontend/Dockerfile` 的 builder 从 `node:20-alpine` 钉到 **`node:24.22.1-alpine`**
     （当前最新 LTS 线）。JS 依赖未动，只换打包用的 Node；已在本地用 node24+npm11 复刻 CI 的 `npm ci && npm run build` 验通。
 - **v2.1.3**（依赖升级）：`govulncheck` 可达漏洞 **3 → 0**（gorilla/websocket 1.5.3、paho.mqtt.golang 1.5.1、
@@ -171,7 +190,8 @@ git push origin v2.1.1
 ### 4. 多架构镜像构建推送
 
 ```bash
-# 需先 docker login registry.cn-hangzhou.aliyuncs.com
+# 需先登录阿里云 ACR（用户名=阿里云账号全名，密码在 ACR「访问凭证」页设置）
+docker login --username=dkl091219 crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com
 ./build.sh          # tag=latest
 ./build.sh v1.0.0   # 自定义 tag
 ```
@@ -179,6 +199,8 @@ git push origin v2.1.1
 构建目标：`linux/amd64` + `linux/arm64`，推送至：
 - `crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-backend`
 - `crpi-wjscuxkxm163odo3.cn-hangzhou.personal.cr.aliyuncs.com/dkl091219/mqtt-mgr-nginx`
+
+> ACR 的登录/推送细节、NAS 上的构建流程、上线切换与回滚，全部整理在 **[DEPLOY.md](DEPLOY.md)**（含 VPC 内网域名与已知坑）。
 
 > **架构说明**：`docker-compose.yaml` 默认拉取的是 **linux/amd64** 镜像（已在 x86_64 服务器验证）。
 > 若目标机器是 **ARM**（树莓派、香橙派、玩客云等），需要先用 `./build.sh <版本号>` 构建并推送
