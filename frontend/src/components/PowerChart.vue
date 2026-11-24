@@ -153,7 +153,11 @@ const loadData = async (silent = false) => {
 
 const formatKwh = (v) => {
   const n = parseFloat(v || 0)
-  return n >= 100 ? n.toFixed(0) : n.toFixed(2)
+  if (n >= 100) return n.toFixed(0)
+  if (n >= 10) return n.toFixed(2)
+  // 小于 10 kWh 时保留 3 位：0.005 kWh 之类的真实数据不会被四舍五入成 "0.00"
+  if (n > 0 && n < 0.001) return '<0.001'
+  return n.toFixed(3)
 }
 
 const updateChipState = (val) => {
@@ -228,6 +232,10 @@ watch(() => props.power, (val) => {
         <div class="summary-item">
           <span class="summary-label">今日用电</span>
           <span class="summary-value">{{ formatKwh(summaryRef.today_energy_kwh) }} kWh</span>
+          <!-- 本站统计依赖采样完整度（设备换芯片/断线期间会缺），设备自报值用来对照 -->
+          <span v-if="summaryRef.device_today_kwh !== undefined" class="summary-note">
+            设备自报 {{ formatKwh(summaryRef.device_today_kwh) }} kWh
+          </span>
         </div>
         <div class="summary-item">
           <span class="summary-label">本月用电</span>
@@ -290,6 +298,10 @@ watch(() => props.power, (val) => {
   font-size: 1.3em;
   font-weight: bold;
   color: var(--text-primary);
+}
+.summary-note {
+  font-size: 0.72em;
+  color: var(--text-muted, #888);
 }
 .power-ranges {
   display: flex;

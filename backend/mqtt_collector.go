@@ -161,6 +161,22 @@ func (pc *PowerCollector) subscribeDevices(c mqtt.Client) {
 				log.Printf("已订阅 %s", topic)
 			}
 		}
+		// 设备自报的累计电量计数器（today / total / yesterday），仅用于对照显示
+		counterHandler := makeCounterHandler(macLower)
+		for _, topic := range []string{
+			fmt.Sprintf("homeassistant/sensor/%s/powerConsumptionToday/state", macUpper),
+			fmt.Sprintf("homeassistant/sensor/%s/powerConsumptionToday/state", macLower),
+			fmt.Sprintf("homeassistant/sensor/%s/powerConsumptionYesterday/state", macUpper),
+			fmt.Sprintf("homeassistant/sensor/%s/powerConsumptionYesterday/state", macLower),
+			fmt.Sprintf("homeassistant/sensor/%s/powerConsumption/state", macUpper),
+			fmt.Sprintf("homeassistant/sensor/%s/powerConsumption/state", macLower),
+		} {
+			t := c.Subscribe(topic, 0, counterHandler)
+			t.WaitTimeout(5 * time.Second)
+			if t.Error() != nil {
+				log.Printf("订阅 %s 失败: %v", topic, t.Error())
+			}
+		}
 	}
 }
 
@@ -204,6 +220,72 @@ func (pc *PowerCollector) makeHAConfigHandler(mac string) mqtt.MessageHandler {
 			}
 			flipNames.plugs[macLower][idx] = strings.TrimSpace(payload.Name)
 			flipNames.mu.Unlock()
+		}
+	}
+}
+
+// ---- 设备自报的累计电量（V2 固件自己算的计数器，用于交叉校验）----
+//
+// V2 固件会发布 powerConsumption（开机至今）、powerConsumptionToday、powerConsumptionYesterday
+// 三个 kWh 计数器。本站自己的统计依赖采样完整度（设备换芯片/断线期间会缺），
+// 所以把设备自报值一并收进来，前端可以对照显示"设备自报 X kWh"。
+var (
+	deviceCountersMu sync.Mutex
+	deviceCounters   = map[string]map[string]float64{}
+)
+
+func setDeviceCounter(mac, key string, v float64) {
+	deviceCountersMu.Lock()
+	defer deviceCountersMu.Unlock()
+	m := deviceCounters[mac]
+	if m == nil {
+		m = make(map[string]float64, 3)
+		deviceCounters[mac] = m
+	}
+	m[key] = v
+}
+
+// DeviceCounters 返回设备自报电量（key: today / total / yesterday，单位 kWh）；没有则 nil
+func DeviceCounters(mac string) map[string]float64 {
+	deviceCountersMu.Lock()
+	defer deviceCountersMu.Unlock()
+	src := deviceCounters[mac]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+// makeCounterHandler 解析 homeassistant/sensor/<MAC>/powerConsumption*/state 的计数载荷
+func makeCounterHandler(mac string) mqtt.MessageHandler {
+	fieldToKey := map[string]string{
+		"powerConsumptionToday":     "today",
+		"powerConsumption":          "total",
+		"powerConsumptionYesterday": "yesterday",
+	}
+	return func(c mqtt.Client, msg mqtt.Message) {
+		var payload map[string]any
+		if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
+			return
+		}
+		for field, key := range fieldToKey {
+			raw, ok := payload[field]
+			if !ok {
+				continue
+			}
+			switch v := raw.(type) {
+			case string:
+				var f float64
+				if _, err := fmt.Sscanf(v, "%f", &f); err == nil {
+					setDeviceCounter(mac, key, f)
+				}
+			case float64:
+				setDeviceCounter(mac, key, v)
+			}
 		}
 	}
 }

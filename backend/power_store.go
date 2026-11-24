@@ -614,6 +614,20 @@ func (s *PowerStore) GetSummary(mac string) (map[string]any, error) {
 	row.Scan(&monthKwh)
 	summary["month_energy_kwh"] = monthKwh
 
+	// 设备自报的累计电量（V2 固件内置计数器）：本站统计依赖采样完整度，
+	// 设备换芯片/断线期间会缺数据，前端用它做对照，避免"看着像 0"。
+	if c := DeviceCounters(mac); len(c) > 0 {
+		if v, ok := c["today"]; ok {
+			summary["device_today_kwh"] = v
+		}
+		if v, ok := c["total"]; ok {
+			summary["device_total_kwh"] = v
+		}
+		if v, ok := c["yesterday"]; ok {
+			summary["device_yesterday_kwh"] = v
+		}
+	}
+
 	return summary, nil
 }
 
