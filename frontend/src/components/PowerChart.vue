@@ -232,10 +232,6 @@ watch(() => props.power, (val) => {
         <div class="summary-item">
           <span class="summary-label">今日用电</span>
           <span class="summary-value">{{ formatKwh(summaryRef.today_energy_kwh) }} kWh</span>
-          <!-- 本站统计依赖采样完整度（设备换芯片/断线期间会缺），设备自报值用来对照 -->
-          <span v-if="summaryRef.device_today_kwh !== undefined" class="summary-note">
-            设备自报 {{ formatKwh(summaryRef.device_today_kwh) }} kWh
-          </span>
         </div>
         <div class="summary-item">
           <span class="summary-label">本月用电</span>
@@ -298,10 +294,6 @@ watch(() => props.power, (val) => {
   font-size: 1.3em;
   font-weight: bold;
   color: var(--text-primary);
-}
-.summary-note {
-  font-size: 0.72em;
-  color: var(--text-muted, #888);
 }
 .power-ranges {
   display: flex;
