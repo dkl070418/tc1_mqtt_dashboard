@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestV1SwitchPayload 后端给 v1 下发的开关命令必须与前端同构（原厂固件只认这个形状）
@@ -133,5 +134,36 @@ func TestTaskExec(t *testing.T) {
 		if got := taskExec(c.m); got != c.want {
 			t.Fatalf("taskExec(%v)=%s, 期望 %s", c.m, got, c.want)
 		}
+	}
+}
+
+// TestPacingDelay 下发节流：同一设备的连续命令之间至少留 v1PublishSpacing，
+// 首次发送不等待；超过间隔则不等待。
+func TestPacingDelay(t *testing.T) {
+	base := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		last time.Time
+		now  time.Time
+		want time.Duration
+	}{
+		{"首次发送不等待", time.Time{}, base, 0},
+		{"紧接着发要等满间隔", base, base.Add(20 * time.Millisecond), v1PublishSpacing - 20*time.Millisecond},
+		{"正好到间隔不等待", base, base.Add(v1PublishSpacing), 0},
+		{"间距足够不等待", base, base.Add(time.Second), 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := pacingDelay(c.last, c.now, v1PublishSpacing); got != c.want {
+				t.Fatalf("pacingDelay=%v, 期望 %v", got, c.want)
+			}
+		})
+	}
+	// 常量本身要守住"150ms、且每 tick 接管上限不该超过 20 条"
+	if v1PublishSpacing != 150*time.Millisecond {
+		t.Fatalf("v1PublishSpacing=%v，期望 150ms（与前端拆包错峰一致）", v1PublishSpacing)
+	}
+	if adoptPerTickMax <= 0 || adoptPerTickMax > 20 {
+		t.Fatalf("adoptPerTickMax=%d，应在 1~20 之间", adoptPerTickMax)
 	}
 }

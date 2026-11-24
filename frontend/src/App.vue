@@ -382,7 +382,16 @@ const queryDeviceState = (mac) => {
 }
 
 const queryAllStates = () => {
-  deviceList.value.forEach(entry => queryDeviceState(typeof entry === 'object' ? entry.mac : entry))
+  // 逐台错开 150ms：v1 固件 MQTT 接收缓冲很小，避免短时间内连续灌多条命令
+  // （与"任务恢复逐插口拆包 150ms 错峰"同一原则）
+  deviceList.value.forEach((entry, i) => {
+    const mac = typeof entry === 'object' ? entry.mac : entry
+    if (i === 0) {
+      queryDeviceState(mac)
+    } else {
+      setTimeout(() => queryDeviceState(mac), i * 150)
+    }
+  })
 }
 
 // 手动强制刷新所有设备插口状态（头部按钮）

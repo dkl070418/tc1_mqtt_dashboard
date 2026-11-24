@@ -37,6 +37,45 @@ import (
 
 const schedulerTickInterval = 15 * time.Second
 
+// v1PublishSpacing 对同一设备的连续下发之间至少留这么久。
+//
+// v1（原厂固件）的 MQTT 接收缓冲很小：历史上"任务多时整包可超 2KB → 被截断 → 疑似看门狗复位"，
+// 表现为"每刷新一次排插重启一次"（前端 App.vue 里因此做了 150ms 错峰的逐插口拆包）。
+// 后端同样会连续对设备下发（任务恢复/接管/定时触发/校时），所以这里统一按 150ms 节流，
+// 并且**串行**发送，避免瞬间把多条命令灌进固件缓冲。
+const v1PublishSpacing = 150 * time.Millisecond
+
+// adoptPerTickMax 每个 tick 最多接管多少条任务（其余留到下一个 tick，避免长时间占用调度循环）
+const adoptPerTickMax = 10
+
+// pacingDelay 为满足"最小间隔"还需要等多久（纯函数，便于测试）
+func pacingDelay(last, now time.Time, spacing time.Duration) time.Duration {
+	if last.IsZero() {
+		return 0
+	}
+	if d := spacing - now.Sub(last); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// publishPaced 节流 + 串行地发布一条命令。
+// 所有对设备的写入都应走这里（tick 定时触发、adopt 接管停用、周期校时）。
+func (s *TaskScheduler) publishPaced(machine, topic, payload string, timeout time.Duration) bool {
+	s.paceMu.Lock()
+	defer s.paceMu.Unlock()
+	if s.paceAt == nil {
+		s.paceAt = make(map[string]time.Time)
+	}
+	if d := pacingDelay(s.paceAt[machine], time.Now(), v1PublishSpacing); d > 0 {
+		time.Sleep(d)
+	}
+	token := s.client.Publish(topic, 0, false, payload)
+	ok := token.WaitTimeout(timeout) && token.Error() == nil
+	s.paceAt[machine] = time.Now()
+	return ok
+}
+
 type TaskScheduler struct {
 	client  mqtt.Client
 	store   *PowerStore
@@ -52,6 +91,10 @@ type TaskScheduler struct {
 	adoptMu     sync.Mutex
 	adoptAt     map[string]time.Time
 	adoptLogged map[string]bool
+
+	// 下发节流状态（publishPaced）：避免连续命令灌爆 v1 固件的小接收缓冲
+	paceMu sync.Mutex
+	paceAt map[string]time.Time
 }
 
 func NewTaskScheduler(store *PowerStore) *TaskScheduler {
@@ -297,14 +340,9 @@ func (s *TaskScheduler) tick() {
 			tag = "(v1)"
 		}
 		// 先发布成功再记 fire：失败不落库，窗口内后续 tick(约15s)可重试
-		token := s.client.Publish(topic, 0, false, payload)
-		ok := token.WaitTimeout(5*time.Second) && token.Error() == nil
-		if !ok {
-			errMsg := "timeout"
-			if token.Error() != nil {
-				errMsg = token.Error().Error()
-			}
-			log.Printf("[scheduler] 下发失败(窗口内将重试) %s 插口%d %s: %s", t.mac, t.plugIdx, t.taskKey, errMsg)
+		// 走 publishPaced：同一设备连续命令之间留 150ms，防灌爆 v1 固件的小接收缓冲
+		if !s.publishPaced(t.mac, topic, payload, 5*time.Second) {
+			log.Printf("[scheduler] 下发失败(窗口内将重试) %s 插口%d %s", t.mac, t.plugIdx, t.taskKey)
 			continue
 		}
 		s.store.MarkSchedulerFire(t.mac, t.plugIdx, t.taskKey, fireMinute)
@@ -332,9 +370,14 @@ func (s *TaskScheduler) adoptV1Tasks(tasks []taskSpec, now time.Time) {
 		s.adoptAt = make(map[string]time.Time)
 		s.adoptLogged = make(map[string]bool)
 	}
+	sent := 0
 	for _, t := range tasks {
 		if t.firmware != "v1" {
 			continue
+		}
+		if sent >= adoptPerTickMax {
+			// 一个 tick 内最多处理这么多条，剩下的下个 tick 继续（15s 后），避免长时间占住循环
+			break
 		}
 		key := fmt.Sprintf("%s|%d|%s", t.mac, t.plugIdx, t.taskKey)
 		// 复查间隔取 1 分钟：前端保存任务时仍会写一次设备(on=1)，这里尽快把它停回去，
@@ -343,10 +386,10 @@ func (s *TaskScheduler) adoptV1Tasks(tasks []taskSpec, now time.Time) {
 			continue
 		}
 		topic := fmt.Sprintf("device/ztc1/%s/set", t.mac)
-		token := s.client.Publish(topic, 0, false, v1DisableTaskPayload(t))
-		if !token.WaitTimeout(3*time.Second) || token.Error() != nil {
+		if !s.publishPaced(t.mac, topic, v1DisableTaskPayload(t), 3*time.Second) {
 			continue // 下一轮 tick 再试
 		}
+		sent++
 		s.adoptAt[key] = now
 		if !s.adoptLogged[key] {
 			s.adoptLogged[key] = true
@@ -506,17 +549,13 @@ func (s *TaskScheduler) syncV1Times(now time.Time, reason string, interval time.
 	unix := now.Unix()
 	for _, mac := range macs {
 		topic := fmt.Sprintf("device/ztc1/%s/set", mac)
-		token := s.client.Publish(topic, 0, false, v1TimeSyncPayload(mac, unix))
-		if token.WaitTimeout(3*time.Second) && token.Error() == nil {
+		// 同样走节流：多台设备时也不会连着灌
+		if s.publishPaced(mac, topic, v1TimeSyncPayload(mac, unix), 3*time.Second) {
 			res.OK++
 			continue
 		}
 		res.Failed++
-		msg := "timeout"
-		if token.Error() != nil {
-			msg = token.Error().Error()
-		}
-		log.Printf("[timesync] 下发失败 %s -> %s: %s", mac, topic, msg)
+		log.Printf("[timesync] 下发失败 %s -> %s (超时或连接异常)", mac, topic)
 	}
 
 	s.timeSyncMu.Lock()
