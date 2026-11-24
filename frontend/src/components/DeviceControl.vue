@@ -229,6 +229,32 @@ const openTimer = (index) => {
   queryPlugTasks(index)   // 打开面板即拉一次真实任务表（含手机 App 建的任务）
 }
 
+// ---- 任务表主动拉取 ----
+// v1 设备的 state 回显是"增量"的（只回本次请求的键），所以"定时"按钮上的数量徽标
+// 不能只靠被动收包 —— 必须在页面加载 / 切换设备 / 定期各主动问一次。
+// 逐插口错峰 200ms，避免 6 条查询同时打到固件的 MQTT 接收缓冲。
+let plugTaskTimer = null
+let plugTaskBootTimers = []
+
+const queryAllPlugTasks = () => {
+  if (isV2.value) return
+  for (let i = 0; i < 6; i++) {
+    plugTaskBootTimers.push(setTimeout(() => queryPlugTasks(i), i * 200))
+  }
+}
+
+const schedulePlugTaskQueries = () => {
+  plugTaskBootTimers.forEach(clearTimeout)
+  plugTaskBootTimers = []
+  // 页面刚加载时 MQTT 可能还没连上：错开补几次，连上后任意一次成功即可
+  ;[800, 3000, 8000].forEach(d => plugTaskBootTimers.push(setTimeout(queryAllPlugTasks, d)))
+}
+
+// 切换设备就重新拉（含首次挂载）
+watch(() => props.device?.mac, (mac) => {
+  if (mac) schedulePlugTaskQueries()
+}, { immediate: true })
+
 const closeTimer = () => {
   timerPlug.value = -1
 }
@@ -614,10 +640,16 @@ onMounted(() => {
   handleResize()
   // 组件挂载时服务端配置可能已加载完成（watch 不会触发），补一次初始化
   if (props.deviceConfig?.layout) persistedLayout.value = props.deviceConfig.layout
+  // 任务表定期刷新（手机 App 在设备上改任务后，网页 5 分钟内跟上）
+  schedulePlugTaskQueries()
+  plugTaskTimer = setInterval(queryAllPlugTasks, 5 * 60 * 1000)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  if (plugTaskTimer) clearInterval(plugTaskTimer)
+  plugTaskBootTimers.forEach(clearTimeout)
+  plugTaskBootTimers = []
 })
 
 // 服务端布局异步到达时同步（只更新持久化值，不触发回写）
