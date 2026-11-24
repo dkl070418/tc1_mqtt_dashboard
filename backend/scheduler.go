@@ -99,6 +99,12 @@ func (s *TaskScheduler) Start(broker, username, password string) error {
 	} else {
 		log.Printf("[timesync] V1 固件周期校时已关闭(v1_time_sync_interval_hours=0), 仅保留前端事件推送")
 	}
+	// 显式打印 v1 后端调度的生效状态：这个开关缺省是 false，配漏了"新特性不生效"很难一眼看出来
+	if cfg.V1BackendScheduling {
+		log.Printf("[scheduler] V1 后端调度已启用: 只有 exec=\"server\" 的 v1 任务由后端执行（设备侧同名槽位会写 on:0 防双触发）")
+	} else {
+		log.Printf("[scheduler] V1 后端调度未启用(v1_backend_scheduling 缺省/false): v1 任务仍由排插自己按设备时钟执行")
+	}
 	return nil
 }
 
